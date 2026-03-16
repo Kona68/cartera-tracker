@@ -415,6 +415,7 @@
   <div class="logo">cartera<span>.io</span></div>
   <div class="header-meta">
     <div id="syncStatus" style="font-size:11px;color:var(--muted)"></div>
+    <button onclick="refreshPrecios()" style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:6px 14px;border-radius:6px;font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .2s" onmouseover="this.style.color='var(--accent)';this.style.borderColor='var(--accent)'" onmouseout="this.style.color='var(--muted)';this.style.borderColor='var(--border)'">↻ Actualizar precios</button>
     <div class="tc-badge">TC MEP: <strong id="tcDisplay">—</strong></div>
     <div class="tc-badge">Tenencia Total: <strong id="totalDisplay">—</strong></div>
   </div>
@@ -2183,10 +2184,48 @@ function showSyncStatus(msg, color='var(--muted)') {
   if (el) { el.textContent = msg; el.style.color = color; }
 }
 
+async function refreshPrecios() {
+  const tickers = state.positions
+    .filter(p => p.tipo !== 'Crypto' && p.cant > 0)
+    .map(p => p.ticket)
+    .join(',');
+
+  if (!tickers) return;
+
+  showSyncStatus('Actualizando precios...', 'var(--yellow)');
+  try {
+    const res = await fetch(`/api/precios?tickers=${encodeURIComponent(tickers)}`);
+    if (!res.ok) throw new Error('API error');
+    const data = await res.json();
+
+    let updated = 0;
+    state.positions.forEach(p => {
+      if (data.precios[p.ticket]) {
+        p.precio = data.precios[p.ticket];
+        updated++;
+      }
+    });
+
+    // Actualizar TC MEP si viene
+    if (data.mep && data.mep > 0) {
+      state.tc = data.mep;
+      const tcInput = document.getElementById('tcInput');
+      if (tcInput) tcInput.value = data.mep;
+    }
+
+    await saveState();
+    renderAll();
+    showSyncStatus(`✓ ${updated} precios actualizados · TC MEP $${data.mep?.toLocaleString('es-AR') || '—'}`, 'var(--accent)');
+    setTimeout(() => showSyncStatus(''), 5000);
+  } catch(e) {
+    showSyncStatus('Error al actualizar precios', 'var(--red)');
+    setTimeout(() => showSyncStatus(''), 4000);
+  }
+}
+
 async function initApp() {
   showSyncStatus('Sincronizando...', 'var(--yellow)');
   try {
-    // Cargar state principal
     const cloudState = await supabaseLoad('state');
     if (cloudState && cloudState.positions && cloudState.positions.length) {
       state = cloudState;
@@ -2194,14 +2233,12 @@ async function initApp() {
       if (!state.aportes)  state.aportes  = [];
       if (!state.ventas)   state.ventas   = [];
     } else {
-      loadState(); // usa initialData como fallback
+      loadState();
     }
 
-    // Cargar snapshots mensuales
     const cloudSnaps = await supabaseLoad('snapshots');
     if (cloudSnaps) localStorage.setItem('portfolio_snapshots', JSON.stringify(cloudSnaps));
 
-    // Cargar snapshots semanales
     const cloudWeekly = await supabaseLoad('weekly');
     if (cloudWeekly) localStorage.setItem('portfolio_weekly', JSON.stringify(cloudWeekly));
 
@@ -2220,6 +2257,13 @@ async function initApp() {
   renderAll();
   checkSnapshotBanner();
   checkWeeklyBanner();
+
+  // Auto-refresh precios al abrir (solo en horario de mercado: lun-vie 11-17hs ARG)
+  const h = now.getHours(), d = now.getDay();
+  const mercadoAbierto = d >= 1 && d <= 5 && h >= 11 && h < 17;
+  if (mercadoAbierto) {
+    setTimeout(() => refreshPrecios(), 2000);
+  }
 }
 
 // Override saveState to also sync snapshots
