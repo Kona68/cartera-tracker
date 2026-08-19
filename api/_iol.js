@@ -47,9 +47,19 @@ export async function getIOLSerie(ticker, desde, hasta, mercado = 'bCBA') {
     if (!res.ok) return { status: res.status, puntos: [] };
     const data = await res.json();
     if (!Array.isArray(data)) return { status: 'respuesta no es una lista', puntos: [] };
-    const puntos = data
-      .filter(d => d?.fechaHora && d?.ultimoPrecio > 0)
-      .map(d => ({ fecha: String(d.fechaHora).slice(0, 10), precio: d.ultimoPrecio }))
+    // En ventanas largas IOL devuelve varios registros por dia (META: 1780 puntos en
+    // 400 dias). Nos quedamos con el ultimo de cada rueda, o todo lo que cuenta ruedas
+    // — 52 semanas, volatilidad, medias moviles — termina midiendo otra cosa.
+    const porDia = new Map();
+    for (const d of data) {
+      if (!d?.fechaHora || !(d.ultimoPrecio > 0)) continue;
+      const hora = String(d.fechaHora);
+      const dia = hora.slice(0, 10);
+      const previo = porDia.get(dia);
+      if (!previo || hora > previo.hora) porDia.set(dia, { hora, precio: d.ultimoPrecio });
+    }
+    const puntos = [...porDia.entries()]
+      .map(([fecha, v]) => ({ fecha, precio: v.precio }))
       .sort((a, b) => a.fecha.localeCompare(b.fecha));
     return { status: res.status, puntos };
   };

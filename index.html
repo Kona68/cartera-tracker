@@ -48,6 +48,13 @@
   #authGate button { width: 100%; background: var(--accent); border: none; color: var(--bg); font-family: var(--display); font-weight: 700; font-size: 13px; letter-spacing: .5px; padding: 12px; border-radius: 6px; cursor: pointer; transition: opacity .2s; }
   #authGate button:disabled { opacity: .5; cursor: default; }
   #authMsg { font-size: 11.5px; margin-top: 14px; line-height: 1.6; min-height: 16px; }
+  .periodos { display: flex; gap: 6px; margin-bottom: 20px; flex-wrap: wrap; }
+  .periodo-btn { background: var(--surface); border: 1px solid var(--border); color: var(--muted); font-family: var(--mono); font-size: 12px; padding: 8px 18px; border-radius: 6px; cursor: pointer; transition: all .2s; }
+  .periodo-btn:hover { color: var(--text); border-color: var(--muted); }
+  .periodo-btn.active { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 500; }
+  .aviso { font-size: 11.5px; color: var(--yellow); background: rgba(255,209,102,0.07); border: 1px solid rgba(255,209,102,0.2); border-radius: 8px; padding: 12px 16px; margin-bottom: 20px; line-height: 1.6; }
+  .aviso:empty { display: none; }
+  .wl-form { display: flex; gap: 10px; align-items: flex-end; margin-bottom: 20px; flex-wrap: wrap; }
   .section { display: none; }
   .section.active { display: block; }
   .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 28px; }
@@ -158,6 +165,8 @@
 <div class="tabs">
   <div class="tab active" onclick="showTab('dashboard')">Dashboard</div>
   <div class="tab" onclick="showTab('cartera')">Cartera</div>
+  <div class="tab" onclick="showTab('rendimiento')">Rendimiento</div>
+  <div class="tab" onclick="showTab('rotacion')">Rotación</div>
   <div class="tab" onclick="showTab('graficos')">Gráficos</div>
   <div class="tab" onclick="showTab('liquidez')">Liquidez</div>
   <div class="tab" onclick="showTab('cargar')">Cargar Operación</div>
@@ -207,6 +216,46 @@
     <div class="table-wrap">
       <div class="table-header"><div class="table-title">Detalle completo de cartera</div></div>
       <div id="detalleTable"></div>
+    </div>
+  </div>
+
+  <!-- RENDIMIENTO POR PERÍODO -->
+  <div id="tab-rendimiento" class="section">
+    <div class="periodos">
+      <button class="periodo-btn" data-periodo="1S" onclick="setPeriodo('1S')">1 semana</button>
+      <button class="periodo-btn" data-periodo="1M" onclick="setPeriodo('1M')">1 mes</button>
+      <button class="periodo-btn active" data-periodo="3M" onclick="setPeriodo('3M')">3 meses</button>
+      <button class="periodo-btn" data-periodo="YTD" onclick="setPeriodo('YTD')">YTD</button>
+      <button class="periodo-btn" data-periodo="1A" onclick="setPeriodo('1A')">1 año</button>
+      <button class="periodo-btn" style="margin-left:auto" onclick="sincronizarHistoria(true).then(()=>{renderRendimiento();renderRotacion()})">↻ Actualizar histórico</button>
+    </div>
+    <div id="rendAviso" class="aviso"></div>
+    <div class="summary-grid" id="rendResumen"></div>
+    <div class="table-wrap">
+      <div class="table-header">
+        <div class="table-title">Rendimiento por posición</div>
+        <div style="font-size:11px;color:var(--muted)">Ordenado por el período elegido</div>
+      </div>
+      <div id="rendTable"></div>
+    </div>
+  </div>
+
+  <!-- ROTACIÓN -->
+  <div id="tab-rotacion" class="section">
+    <div class="aviso">Esto son indicadores, no una recomendación: la decisión de rotar es tuya. Las columnas miden precio, no valor: algo puede estar barato y seguir cayendo.</div>
+    <div class="form-section" style="padding:20px">
+      <div class="wl-form">
+        <div class="field" style="flex:1;min-width:200px">
+          <label>Agregar ticker a mirar</label>
+          <input type="text" id="wlTicker" placeholder="MU" onkeydown="if(event.key==='Enter')agregarAWatchlist()">
+        </div>
+        <button class="btn" onclick="agregarAWatchlist()">Agregar</button>
+      </div>
+      <div style="font-size:11px;color:var(--muted)">Se compara con la misma vara que tus posiciones. Sirve cualquier ticker que cotice en BYMA o NYSE vía IOL.</div>
+    </div>
+    <div class="table-wrap">
+      <div class="table-header"><div class="table-title">Tus posiciones y las que estás mirando</div></div>
+      <div id="rotTable"></div>
     </div>
   </div>
 
@@ -583,6 +632,8 @@ function showTab(name) {
   document.getElementById('tab-' + name).classList.add('active');
   event.target.classList.add('active');
   if (name === 'graficos') renderCharts();
+  if (name === 'rendimiento') renderRendimiento();
+  if (name === 'rotacion') renderRotacion();
   if (name === 'liquidez') { renderLiquidez(); renderAportes(); renderMovimientos(); }
 }
 
@@ -1558,6 +1609,328 @@ function renderAll() {
   renderDashboard(); renderDetalle(); renderOps();
   renderSnapshotHistory(); renderWeeklyHistory();
   renderLiquidez(); renderAportes(); renderMovimientos(); renderPnlRealizado();
+  renderRendimiento(); renderRotacion();
+}
+
+// =========================================================
+// HISTORIA DE PRECIOS
+// =========================================================
+// IOL no ajusta los splits ni los cambios de ratio de CEDEAR: ni siquiera en la
+// serie que llama "ajustada" (YPFD viene de ahi y aun asi muestra el salto).
+// Sin corregir, ECOG da -89% en el año cuando dio +12,6%. Se detecta por el salto
+// de un dia para otro y se lleva todo el tramo viejo a las unidades de hoy.
+const RATIOS_PLAUSIBLES = [2, 3, 4, 5, 6, 8, 10, 12, 15, 20];
+const SALTO_ARRIBA = 1.6, SALTO_ABAJO = 0.625;
+
+let historia = {};          // ticker -> [{fecha, precio}] ya corregido
+let splitsVistos = [];      // {ticker, fecha, factor}
+let watchlist = [];         // [{ticker, nota}]
+let periodoActivo = '3M';
+let historiaAlDia = null;   // fecha del ultimo dato que tenemos
+
+function detectarSplits(serie) {
+  const encontrados = [];
+  for (let i = 1; i < serie.length; i++) {
+    const r = serie[i].precio / serie[i - 1].precio;
+    if (r > SALTO_ARRIBA || r < SALTO_ABAJO) {
+      const inverso = r < 1;
+      const ratio = RATIOS_PLAUSIBLES.reduce((mejor, x) =>
+        Math.abs((inverso ? 1 / x : x) - r) < Math.abs((inverso ? 1 / mejor : mejor) - r) ? x : mejor);
+      encontrados.push({ fecha: serie[i].fecha, factor: inverso ? 1 / ratio : ratio });
+    }
+  }
+  return encontrados;
+}
+
+function corregirSerie(serie, splits) {
+  if (!splits.length) return serie.slice();
+  const factores = new Array(serie.length).fill(1);
+  let acum = 1;
+  for (let i = serie.length - 1; i > 0; i--) {
+    const s = splits.find(x => x.fecha === serie[i].fecha);
+    if (s) acum *= s.factor;
+    factores[i - 1] = acum;
+  }
+  return serie.map((p, i) => ({ fecha: p.fecha, precio: p.precio * factores[i], crudo: p.precio }));
+}
+
+function inicioDePeriodo(periodo) {
+  const hoy = new Date();
+  const d = new Date(hoy);
+  if (periodo === '1S') d.setDate(d.getDate() - 7);
+  else if (periodo === '1M') d.setMonth(d.getMonth() - 1);
+  else if (periodo === '3M') d.setMonth(d.getMonth() - 3);
+  else if (periodo === 'YTD') return `${hoy.getFullYear()}-01-01`;
+  else if (periodo === '1A') d.setFullYear(d.getFullYear() - 1);
+  return d.toISOString().slice(0, 10);
+}
+
+// Ultimo precio con fecha <= la pedida. Devuelve null si la serie arranca despues:
+// preferimos no mostrar el dato antes que mostrar uno que no corresponde.
+function precioEn(ticker, fecha) {
+  const s = historia[ticker];
+  if (!s || !s.length) return null;
+  let elegido = null;
+  for (const p of s) { if (p.fecha <= fecha) elegido = p; else break; }
+  return elegido ? elegido.precio : null;
+}
+
+function ultimoPrecio(ticker) {
+  const s = historia[ticker];
+  return s && s.length ? s[s.length - 1].precio : null;
+}
+
+function rendPeriodo(ticker, periodo) {
+  const desde = precioEn(ticker, inicioDePeriodo(periodo));
+  const hasta = ultimoPrecio(ticker);
+  if (!desde || !hasta) return null;
+  return hasta / desde - 1;
+}
+
+// Cuanto se movio la canasta que tenes hoy, en ese periodo. No es la rentabilidad
+// historica de la cartera (para eso harian falta las compras y ventas de cada dia):
+// es que hubiera pasado si hubieras tenido estas mismas posiciones todo el periodo.
+function rendCanasta(periodo) {
+  const desde = inicioDePeriodo(periodo);
+  let vIni = 0, vFin = 0, fuera = [];
+  for (const p of state.positions) {
+    if (p.tipo === 'Crypto' || !p.cant) continue;
+    const pi = precioEn(p.ticket, desde), pf = ultimoPrecio(p.ticket);
+    if (!pi || !pf) { fuera.push(p.ticket); continue; }
+    vIni += pi * p.cant; vFin += pf * p.cant;
+  }
+  return { rend: vIni ? vFin / vIni - 1 : null, fuera, vIni, vFin };
+}
+
+function maximo52s(ticker) {
+  const s = historia[ticker]; if (!s || !s.length) return null;
+  const ventana = s.slice(-252);
+  return Math.max(...ventana.map(p => p.precio));
+}
+
+function volatilidadAnual(ticker) {
+  const s = historia[ticker]; if (!s || s.length < 30) return null;
+  const v = s.slice(-252);
+  const rets = [];
+  for (let i = 1; i < v.length; i++) rets.push(Math.log(v[i].precio / v[i - 1].precio));
+  const m = rets.reduce((a, b) => a + b, 0) / rets.length;
+  const va = rets.reduce((a, b) => a + (b - m) ** 2, 0) / (rets.length - 1);
+  return Math.sqrt(va) * Math.sqrt(252);
+}
+
+function media(ticker, dias) {
+  const s = historia[ticker]; if (!s || s.length < dias) return null;
+  const v = s.slice(-dias);
+  return v.reduce((a, p) => a + p.precio, 0) / v.length;
+}
+
+function tendencia(ticker) {
+  const corta = media(ticker, 50), larga = media(ticker, 200);
+  if (!corta || !larga) return null;
+  return { corta, larga, alcista: corta > larga, brecha: corta / larga - 1 };
+}
+
+// ---------- sincronizacion ----------
+function tickersDeInteres() {
+  const propios = state.positions.filter(p => p.tipo !== 'Crypto' && p.cant > 0).map(p => p.ticket);
+  return [...new Set([...propios, ...watchlist.map(w => w.ticker)])];
+}
+
+async function cargarHistoriaGuardada() {
+  const [filas, splits, wl] = await Promise.all([
+    supabaseSelect('precios_historicos', 'ticker,fecha,precio&order=fecha.asc&limit=100000'),
+    supabaseSelect('splits', 'ticker,fecha,factor'),
+    supabaseSelect('watchlist', 'ticker,nota&order=ticker.asc'),
+  ]);
+  watchlist = wl || [];
+  splitsVistos = splits || [];
+  historia = {};
+  for (const f of (filas || [])) {
+    (historia[f.ticker] = historia[f.ticker] || []).push({ fecha: f.fecha, precio: Number(f.precio) });
+  }
+  historiaAlDia = Object.values(historia).flat().reduce((max, p) => p.fecha > max ? p.fecha : max, '');
+}
+
+async function sincronizarHistoria(forzar) {
+  const tickers = tickersDeInteres();
+  if (!tickers.length) return;
+
+  const limite = new Date(Date.now() - 4 * 864e5).toISOString().slice(0, 10);
+  const faltan = tickers.filter(t => !historia[t] || !historia[t].length);
+  if (!forzar && !faltan.length && historiaAlDia && historiaAlDia >= limite) return;
+
+  showSyncStatus('Trayendo histórico...', 'var(--yellow)');
+  const desde = new Date(Date.now() - 400 * 864e5).toISOString().slice(0, 10);
+  const pedir = (forzar || faltan.length === tickers.length) ? tickers : [...new Set([...faltan, ...tickers])];
+
+  const res = await fetch(`/api/historico?tickers=${encodeURIComponent(pedir.join(','))}&desde=${desde}`);
+  if (!res.ok) { showSyncStatus('No se pudo traer el histórico', 'var(--red)'); return; }
+  const data = await res.json();
+
+  const filas = [], splitsNuevos = [];
+  for (const [ticker, serie] of Object.entries(data.series || {})) {
+    const splits = detectarSplits(serie);
+    splits.forEach(s => splitsNuevos.push({ ticker, fecha: s.fecha, factor: s.factor }));
+    const corregida = corregirSerie(serie, splits);
+    historia[ticker] = corregida.map(p => ({ fecha: p.fecha, precio: p.precio }));
+    corregida.forEach(p => filas.push({ ticker, fecha: p.fecha, precio: p.precio, precio_crudo: p.crudo ?? p.precio }));
+  }
+
+  await supabaseUpsert('precios_historicos', filas);
+  if (splitsNuevos.length) await supabaseUpsert('splits', splitsNuevos);
+  splitsVistos = splitsNuevos;
+  historiaAlDia = filas.reduce((max, f) => f.fecha > max ? f.fecha : max, '');
+
+  const fallas = Object.keys(data.fallas || {});
+  showSyncStatus(fallas.length ? `Histórico listo · sin datos: ${fallas.join(', ')}` : '✓ Histórico actualizado', fallas.length ? 'var(--yellow)' : 'var(--accent)');
+  setTimeout(() => showSyncStatus(''), 5000);
+}
+
+// ---------- watchlist ----------
+async function agregarAWatchlist() {
+  const input = document.getElementById('wlTicker');
+  const ticker = (input.value || '').trim().toUpperCase();
+  if (!ticker) return;
+  if (watchlist.some(w => w.ticker === ticker) || state.positions.some(p => p.ticket === ticker)) {
+    showToast('Ya está en la lista'); input.value = ''; return;
+  }
+  await supabaseUpsert('watchlist', [{ ticker, nota: null }]);
+  watchlist.push({ ticker, nota: null });
+  input.value = '';
+  await sincronizarHistoria(true);
+  if (!historia[ticker]) showToast(`No hay serie para ${ticker}`);
+  renderRotacion();
+}
+
+async function quitarDeWatchlist(ticker) {
+  await supabaseDelete('watchlist', `ticker=eq.${encodeURIComponent(ticker)}`);
+  watchlist = watchlist.filter(w => w.ticker !== ticker);
+  renderRotacion();
+}
+
+// =========================================================
+// RENDIMIENTO POR PERIODO
+// =========================================================
+function setPeriodo(p) {
+  periodoActivo = p;
+  document.querySelectorAll('.periodo-btn').forEach(b => b.classList.toggle('active', b.dataset.periodo === p));
+  renderRendimiento();
+}
+
+function celdaRend(r) {
+  if (r === null || r === undefined) return '<td class="neutral">—</td>';
+  return `<td class="${r >= 0 ? 'pos' : 'neg'}">${fmtPct(r)}</td>`;
+}
+
+function renderRendimiento() {
+  const cont = document.getElementById('rendResumen');
+  if (!cont) return;
+
+  if (!Object.keys(historia).length) {
+    cont.innerHTML = `<div class="card"><div class="card-label">Sin histórico</div><div class="card-sub">Todavía no se trajo la serie de precios. Probá con "Actualizar histórico".</div></div>`;
+    document.getElementById('rendTable').innerHTML = '';
+    return;
+  }
+
+  const canasta = rendCanasta(periodoActivo);
+  const desde = inicioDePeriodo(periodoActivo);
+
+  cont.innerHTML = `
+    <div class="card ${canasta.rend >= 0 ? 'positive' : 'negative'}">
+      <div class="card-label">Cartera · ${periodoActivo}</div>
+      <div class="card-value ${canasta.rend >= 0 ? 'green' : 'red'}">${canasta.rend === null ? '—' : fmtPct(canasta.rend)}</div>
+      <div class="card-sub">Desde ${desde}${canasta.fuera.length ? ' · sin serie: ' + canasta.fuera.join(', ') : ''}</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Valor de la canasta</div>
+      <div class="card-value">${fmt(canasta.vFin)}</div>
+      <div class="card-sub">Al inicio del período: ${fmt(canasta.vIni)}</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Datos al</div>
+      <div class="card-value">${historiaAlDia || '—'}</div>
+      <div class="card-sub">${Object.keys(historia).length} tickers con serie</div>
+    </div>`;
+
+  const filas = state.positions
+    .filter(p => p.tipo !== 'Crypto' && p.cant > 0)
+    .map(p => ({ p, r: Object.fromEntries(['1S','1M','3M','YTD','1A'].map(k => [k, rendPeriodo(p.ticket, k)])) }))
+    .sort((a, b) => (b.r[periodoActivo] ?? -99) - (a.r[periodoActivo] ?? -99));
+
+  document.getElementById('rendTable').innerHTML = `
+    <table>
+      <thead><tr>
+        <th>Ticker</th><th>Tipo</th><th>1 semana</th><th>1 mes</th><th>3 meses</th><th>YTD</th><th>1 año</th><th>vs PPC</th>
+      </tr></thead>
+      <tbody>${filas.map(({ p, r }) => {
+        const vsPpc = p.ppc ? (p.precio / p.ppc - 1) : null;
+        return `<tr>
+          <td class="ticker">${p.ticket}</td>
+          <td><span class="tipo-badge tipo-${(p.tipo||'').toLowerCase().replace('ó','o').replace('í','i')}">${p.tipo}</span></td>
+          ${celdaRend(r['1S'])}${celdaRend(r['1M'])}${celdaRend(r['3M'])}${celdaRend(r['YTD'])}${celdaRend(r['1A'])}
+          ${celdaRend(vsPpc)}
+        </tr>`;
+      }).join('')}</tbody>
+    </table>
+    ${filas.length ? '' : '<div style="padding:20px;color:var(--muted)">Sin posiciones con serie de precios.</div>'}`;
+
+  const aviso = document.getElementById('rendAviso');
+  const conSplit = [...new Set(splitsVistos.map(s => s.ticker))];
+  aviso.innerHTML = conSplit.length
+    ? `Series corregidas por split o cambio de ratio en: <strong>${conSplit.join(', ')}</strong>. Sin esa corrección los rendimientos largos salen completamente mal.`
+    : '';
+}
+
+// =========================================================
+// ROTACION
+// =========================================================
+function renderRotacion() {
+  const cont = document.getElementById('rotTable');
+  if (!cont) return;
+
+  const propios = state.positions.filter(p => p.tipo !== 'Crypto' && p.cant > 0);
+  const totalCartera = propios.reduce((a, p) => a + p.precio * p.cant, 0);
+
+  const armar = (ticker, pos) => {
+    const ult = ultimoPrecio(ticker);
+    const max = maximo52s(ticker);
+    const vol = volatilidadAnual(ticker);
+    const t = tendencia(ticker);
+    return {
+      ticker, pos,
+      r3: rendPeriodo(ticker, '3M'), r12: rendPeriodo(ticker, '1A'), r1: rendPeriodo(ticker, '1M'),
+      desdeMax: (ult && max) ? ult / max - 1 : null,
+      vol, tend: t,
+      vsPpc: pos && pos.ppc ? pos.precio / pos.ppc - 1 : null,
+      peso: pos ? (pos.precio * pos.cant) / totalCartera : null,
+    };
+  };
+
+  const filas = [
+    ...propios.map(p => armar(p.ticket, p)),
+    ...watchlist.map(w => armar(w.ticker, null)),
+  ].sort((a, b) => (b.r3 ?? -99) - (a.r3 ?? -99));
+
+  cont.innerHTML = `
+    <table>
+      <thead><tr>
+        <th>Ticker</th><th>En cartera</th><th>1 mes</th><th>3 meses</th><th>1 año</th>
+        <th>Desde máx. 52s</th><th>Volatilidad</th><th>Tendencia</th><th>vs PPC</th><th>Peso</th><th></th>
+      </tr></thead>
+      <tbody>${filas.map(f => `
+        <tr>
+          <td class="ticker">${f.ticker}</td>
+          <td>${f.pos ? '<span class="tipo-badge tipo-cedear">sí</span>' : '<span class="tipo-badge" style="background:var(--surface2);color:var(--muted);border:1px solid var(--border)">mirando</span>'}</td>
+          ${celdaRend(f.r1)}${celdaRend(f.r3)}${celdaRend(f.r12)}
+          ${f.desdeMax === null ? '<td class="neutral">—</td>' : `<td class="${f.desdeMax > -0.1 ? 'pos' : 'neg'}">${fmtPct(f.desdeMax)}</td>`}
+          <td class="neutral">${f.vol === null ? '—' : (f.vol * 100).toFixed(0) + '%'}</td>
+          <td class="${f.tend ? (f.tend.alcista ? 'pos' : 'neg') : 'neutral'}">${f.tend ? (f.tend.alcista ? 'alcista' : 'bajista') : '—'}</td>
+          ${celdaRend(f.vsPpc)}
+          <td class="neutral">${f.peso === null ? '—' : (f.peso * 100).toFixed(1) + '%'}</td>
+          <td>${f.pos ? '' : `<span onclick="quitarDeWatchlist('${f.ticker}')" style="cursor:pointer;color:var(--muted)" title="Quitar">×</span>`}</td>
+        </tr>`).join('')}</tbody>
+    </table>
+    ${filas.length ? '' : '<div style="padding:20px;color:var(--muted)">Agregá tickers a la lista para comparar.</div>'}`;
 }
 
 // =========================================================
@@ -1644,6 +2017,34 @@ function abrirApp() {
   initApp();
 }
 
+// Helpers REST genericos, para las tablas nuevas.
+async function supabaseSelect(tabla, query) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${tabla}?select=${query}`, { headers: await authHeaders() });
+  if (!res.ok) return null;
+  return res.json();
+}
+
+async function supabaseUpsert(tabla, filas) {
+  if (!filas || !filas.length) return;
+  // De a tandas: la serie de un año por ticker son miles de filas y el request se cae entero.
+  const TANDA = 2000;
+  for (let i = 0; i < filas.length; i += TANDA) {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${tabla}`, {
+      method: 'POST',
+      headers: await authHeaders({ 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates,return=minimal' }),
+      body: JSON.stringify(filas.slice(i, i + TANDA))
+    });
+    if (!res.ok) throw new Error(`upsert ${tabla}: ${res.status} ${await res.text()}`);
+  }
+}
+
+async function supabaseDelete(tabla, filtro) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${tabla}?${filtro}`, {
+    method: 'DELETE', headers: await authHeaders()
+  });
+  if (!res.ok) throw new Error(`delete ${tabla}: ${res.status}`);
+}
+
 function loadSnapshots() { try { return JSON.parse(localStorage.getItem('portfolio_snapshots')||'[]'); } catch(e) { return []; } }
 function loadWeeklySnapshots() { try { return JSON.parse(localStorage.getItem('portfolio_weekly')||'[]'); } catch(e) { return []; } }
 
@@ -1701,6 +2102,12 @@ async function initApp() {
   const retFecha = document.getElementById('ret-fecha');
   if (retFecha) retFecha.value = now.toISOString().split('T')[0];
   renderAll(); checkSnapshotBanner(); checkWeeklyBanner();
+
+  // La historia va aparte: si falla, la app sigue andando igual que siempre.
+  cargarHistoriaGuardada()
+    .then(() => { renderRendimiento(); renderRotacion(); return sincronizarHistoria(false); })
+    .then(() => { renderRendimiento(); renderRotacion(); })
+    .catch(e => console.warn('histórico:', e));
   const h = now.getHours(), d = now.getDay();
   if (d >= 1 && d <= 5 && h >= 11 && h < 17) setTimeout(() => refreshPrecios(), 2000);
 }
