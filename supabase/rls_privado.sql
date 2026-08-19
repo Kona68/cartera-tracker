@@ -22,3 +22,7 @@ create policy "Dueño actualiza" on public.portfolio_state
   with check ((select auth.jwt() ->> 'email') = 'fkonaszuk8@gmail.com');
 
 -- Sin politica de delete: nadie puede borrar filas, igual que hasta ahora.
+
+-- Aplicado el 19/8/2026. Se agrego ademas esto: RLS ya frena las filas, pero anon
+-- seguia teniendo el grant y la tabla aparecia en el esquema de GraphQL publico.
+revoke all on public.portfolio_state from anon;
