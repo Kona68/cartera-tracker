@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Cartera | Portfolio Tracker</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.58.0/dist/umd/supabase.min.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
 <style>
@@ -36,6 +37,17 @@
   .tab:hover { color: var(--text); }
   .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
   main { padding: 28px 32px; max-width: 1600px; }
+  body.locked > header, body.locked > .tabs, body.locked > main { display: none; }
+  #authGate { position: fixed; inset: 0; z-index: 500; background: var(--bg); display: none; align-items: center; justify-content: center; padding: 24px; }
+  body.locked #authGate { display: flex; }
+  #authGate .box { width: 100%; max-width: 380px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 32px; }
+  #authGate .logo { font-size: 26px; margin-bottom: 6px; }
+  #authGate .sub { color: var(--muted); font-size: 12px; margin-bottom: 24px; line-height: 1.6; }
+  #authGate input { width: 100%; background: var(--surface2); border: 1px solid var(--border); color: var(--text); font-family: var(--mono); font-size: 13px; padding: 11px 14px; border-radius: 6px; margin-bottom: 12px; }
+  #authGate input:focus { outline: none; border-color: var(--accent); }
+  #authGate button { width: 100%; background: var(--accent); border: none; color: var(--bg); font-family: var(--display); font-weight: 700; font-size: 13px; letter-spacing: .5px; padding: 12px; border-radius: 6px; cursor: pointer; transition: opacity .2s; }
+  #authGate button:disabled { opacity: .5; cursor: default; }
+  #authMsg { font-size: 11.5px; margin-top: 14px; line-height: 1.6; min-height: 16px; }
   .section { display: none; }
   .section.active { display: block; }
   .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 28px; }
@@ -118,7 +130,19 @@
   .badge-venta { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 500; background: rgba(0,229,160,0.1); color: var(--accent); border: 1px solid rgba(0,229,160,0.2); }
 </style>
 </head>
-<body>
+<body class="locked">
+
+<div id="authGate">
+  <div class="box">
+    <div class="logo">cartera<span>.io</span></div>
+    <div class="sub">Cartera privada. Ponés tu mail y te llega un link para entrar.</div>
+    <form onsubmit="enviarMagicLink(event)">
+      <input type="email" id="authEmail" placeholder="tu@mail.com" autocomplete="email" required>
+      <button type="submit" id="authBtn">Enviarme el link</button>
+    </form>
+    <div id="authMsg"></div>
+  </div>
+</div>
 
 <header>
   <div class="logo">cartera<span>.io</span></div>
@@ -127,6 +151,7 @@
     <button onclick="refreshPrecios()" style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:6px 14px;border-radius:6px;font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .2s" onmouseover="this.style.color='var(--accent)';this.style.borderColor='var(--accent)'" onmouseout="this.style.color='var(--muted)';this.style.borderColor='var(--border)'">↻ Actualizar precios</button>
     <div class="tc-badge">TC MEP: <strong id="tcDisplay">—</strong></div>
     <div class="tc-badge">Tenencia Total: <strong id="totalDisplay">—</strong></div>
+    <button onclick="cerrarSesion()" title="Cerrar sesión" style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:6px 12px;border-radius:6px;font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .2s" onmouseover="this.style.color='var(--red)';this.style.borderColor='var(--red)'" onmouseout="this.style.color='var(--muted)';this.style.borderColor='var(--border)'">Salir</button>
   </div>
 </header>
 
@@ -1541,10 +1566,21 @@ function renderAll() {
 const SUPABASE_URL = 'https://ahkdtgjwiphksdacuddq.supabase.co';
 const SUPABASE_KEY = 'sb_publishable_uRaUHjPrvMZqHcDJ1H3E6g_l1_4oGcy';
 
+// La key publicable es publica a proposito: no da acceso a nada por si sola.
+// Lo que abre la puerta es el token de sesion, y RLS solo lo acepta para el dueño de la cartera.
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// getSession renueva el token solo si vencio, asi que se pide en cada llamada.
+async function authHeaders(extra) {
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) throw new Error('Sin sesion');
+  return Object.assign({ 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${session.access_token}` }, extra || {});
+}
+
 async function supabaseSave(key, value) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/portfolio_state`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}`, 'Prefer': 'resolution=merge-duplicates' },
+    headers: await authHeaders({ 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates' }),
     body: JSON.stringify({ id: key, data: value, updated_at: new Date().toISOString() })
   });
   if (!res.ok) throw new Error('Supabase save error: ' + res.status);
@@ -1552,11 +1588,60 @@ async function supabaseSave(key, value) {
 
 async function supabaseLoad(key) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/portfolio_state?id=eq.${key}&select=data`, {
-    headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` }
+    headers: await authHeaders()
   });
   if (!res.ok) return null;
   const rows = await res.json();
   return rows.length ? rows[0].data : null;
+}
+
+// =========================================================
+// LOGIN
+// =========================================================
+function authMsg(txt, color) {
+  const el = document.getElementById('authMsg');
+  if (el) { el.textContent = txt; el.style.color = color || 'var(--muted)'; }
+}
+
+async function enviarMagicLink(ev) {
+  ev.preventDefault();
+  const email = document.getElementById('authEmail').value.trim();
+  const btn = document.getElementById('authBtn');
+  btn.disabled = true; authMsg('Enviando...', 'var(--yellow)');
+  const { error } = await sb.auth.signInWithOtp({
+    email,
+    options: { emailRedirectTo: window.location.origin, shouldCreateUser: false }
+  });
+  btn.disabled = false;
+  if (error) {
+    authMsg(error.message.includes('not allowed') || error.message.includes('Signups')
+      ? 'Ese mail no tiene acceso a esta cartera.'
+      : 'No se pudo enviar el link: ' + error.message, 'var(--red)');
+    return;
+  }
+  authMsg('Listo. Te mandamos el link a ' + email + '. Abrilo desde este mismo dispositivo o cualquier otro: entra igual.', 'var(--accent)');
+}
+
+async function cerrarSesion() {
+  await sb.auth.signOut();
+  location.reload();
+}
+
+let appIniciada = false;
+async function boot() {
+  // Si venimos del link del mail, la sesion llega en el hash y el cliente la levanta solo.
+  const { data: { session } } = await sb.auth.getSession();
+  if (session) { abrirApp(); }
+  sb.auth.onAuthStateChange((evento, s) => {
+    if (s && !appIniciada) abrirApp();
+  });
+}
+
+function abrirApp() {
+  if (appIniciada) return;
+  appIniciada = true;
+  document.body.classList.remove('locked');
+  initApp();
 }
 
 function loadSnapshots() { try { return JSON.parse(localStorage.getItem('portfolio_snapshots')||'[]'); } catch(e) { return []; } }
@@ -1636,7 +1721,7 @@ async function saveSnapshotsCloud() {
   try { await supabaseSave('snapshots', loadSnapshots()); await supabaseSave('weekly', loadWeeklySnapshots()); } catch(e) {}
 }
 
-initApp();
+boot();
 </script>
 </body>
 </html>
