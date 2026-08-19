@@ -55,6 +55,19 @@
   .aviso { font-size: 11.5px; color: var(--yellow); background: rgba(255,209,102,0.07); border: 1px solid rgba(255,209,102,0.2); border-radius: 8px; padding: 12px 16px; margin-bottom: 20px; line-height: 1.6; }
   .aviso:empty { display: none; }
   .wl-form { display: flex; gap: 10px; align-items: flex-end; margin-bottom: 20px; flex-wrap: wrap; }
+  #editorOverlay { position: fixed; inset: 0; z-index: 400; background: rgba(10,12,15,.8); backdrop-filter: blur(4px); display: none; align-items: center; justify-content: center; padding: 24px; }
+  #editorOverlay.abierto { display: flex; }
+  #editorOverlay .caja { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 28px; width: 100%; max-width: 470px; max-height: 88vh; overflow-y: auto; }
+  #editorOverlay h3 { font-family: var(--display); font-size: 17px; font-weight: 700; color: var(--accent); margin-bottom: 4px; }
+  #editorOverlay .sub { font-size: 11.5px; color: var(--muted); line-height: 1.6; margin-bottom: 22px; }
+  #editorOverlay .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 20px; }
+  #editorOverlay .ancho { grid-column: 1 / -1; }
+  #editorOverlay .acciones { display: flex; gap: 10px; }
+  #editorOverlay .acciones .btn { flex: 1; }
+  #edImpacto { font-size: 11.5px; line-height: 1.7; color: var(--muted); background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; margin-bottom: 20px; }
+  #edImpacto b { color: var(--text); font-weight: 500; }
+  .btn-icono { background: transparent; border: 1px solid var(--border); color: var(--muted); padding: 4px 9px; border-radius: 5px; font-family: var(--mono); font-size: 11px; cursor: pointer; transition: all .2s; }
+  .btn-icono:hover { color: var(--accent); border-color: var(--accent); }
   .section { display: none; }
   .section.active { display: block; }
   .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 28px; }
@@ -148,6 +161,31 @@
       <button type="submit" id="authBtn">Enviarme el link</button>
     </form>
     <div id="authMsg"></div>
+  </div>
+</div>
+
+<div id="editorOverlay" onclick="if(event.target===this)cerrarEditor()">
+  <div class="caja">
+    <h3 id="edTitulo">Editar posición</h3>
+    <div class="sub">Esto corrige lo que está cargado. No genera una venta ni mueve la liquidez: si vendiste de verdad, usá Cargar operación.</div>
+    <input type="hidden" id="ed-id">
+    <div class="grid">
+      <div class="field"><label>Cantidad</label><input type="number" id="ed-cant" step="any" oninput="calcularImpacto()"></div>
+      <div class="field"><label>PPC</label><input type="number" id="ed-ppc" step="any" oninput="calcularImpacto()"></div>
+      <div class="field"><label>Precio actual ARS</label><input type="number" id="ed-precio" step="any" oninput="calcularImpacto()"></div>
+      <div class="field"><label>Precio USD</label><input type="number" id="ed-precioUSD" step="any"></div>
+      <div class="field"><label>Tipo</label>
+        <select id="ed-tipo"><option>Cedear</option><option>Acción</option><option>Crypto</option><option>Bono</option><option>FCI</option></select>
+      </div>
+      <div class="field"><label>Sector</label><input type="text" id="ed-sector"></div>
+      <div class="field ancho" id="ed-manual-wrap" style="display:none"><label>Tenencia manual ARS</label><input type="number" id="ed-manual" step="any"></div>
+      <div class="field ancho"><label>Fecha de compra</label><input type="date" id="ed-fecha"></div>
+    </div>
+    <div id="edImpacto"></div>
+    <div class="acciones">
+      <button class="btn" onclick="guardarEdicion()">Guardar corrección</button>
+      <button class="btn-secondary" style="flex:0 0 auto;padding:0 18px" onclick="cerrarEditor()">Cancelar</button>
+    </div>
   </div>
 </div>
 
@@ -735,7 +773,7 @@ function renderDetalle() {
       <td class="${cls(c.pnl)}">${fmt(c.pnl)}</td>
       <td class="${cls(c.pnlUSD)}">${fmtUSD(c.pnlUSD)}</td>
       <td class="neutral">${p.fecha || '—'}</td>
-      <td><button class="btn-secondary" onclick="deletePos(${p.id})">✕</button></td>
+      <td style="white-space:nowrap"><button class="btn-icono" onclick="event.stopPropagation();abrirEditor(${p.id})" title="Editar">✎</button> <button class="btn-secondary" onclick="event.stopPropagation();deletePos(${p.id})">✕</button></td>
     </tr>`;
   }).join('');
   document.getElementById('detalleTable').innerHTML = `
@@ -757,7 +795,7 @@ function renderOps() {
       <td><span class="tipo-badge tipo-${p.tipo.toLowerCase().replace('é','e').replace('ó','o')}">${p.tipo}</span></td>
       <td>${p.cant}</td><td>${fmt(p.ppc)}</td><td>${fmt(p.precio)}</td>
       <td>${p.fecha || '—'}</td><td>${p.tc || state.tc}</td>
-      <td><button class="btn-secondary" onclick="deletePos(${p.id})">Eliminar</button></td>
+      <td style="white-space:nowrap"><button class="btn-icono" onclick="abrirEditor(${p.id})">Editar</button> <button class="btn-secondary" onclick="deletePos(${p.id})">Eliminar</button></td>
     </tr>`).join('');
   document.getElementById('opTable').innerHTML = `
     <table>
@@ -802,6 +840,94 @@ function addPosition() {
   saveState(); renderAll();
   ['f-ticket','f-ppc','f-cant','f-precio','f-precioUSD','f-fecha','f-tc'].forEach(id => document.getElementById(id).value = '');
 }
+
+// =========================================================
+// EDITAR POSICION
+// =========================================================
+// Corregir lo que se cargo mal no es lo mismo que vender: no hay plata que entre,
+// no hay P&L realizado y no se toca la liquidez. Solo cambia lo que dice la ficha.
+let edPosicionOriginal = null;
+
+function abrirEditor(id) {
+  const p = state.positions.find(x => x.id === id);
+  if (!p) return;
+  edPosicionOriginal = { ...p };
+  document.getElementById('edTitulo').textContent = `Editar ${p.ticket}`;
+  document.getElementById('ed-id').value = p.id;
+  document.getElementById('ed-cant').value = p.cant;
+  document.getElementById('ed-ppc').value = p.ppc;
+  document.getElementById('ed-precio').value = p.precio;
+  document.getElementById('ed-precioUSD').value = p.precioUSD || '';
+  document.getElementById('ed-tipo').value = p.tipo;
+  document.getElementById('ed-sector').value = p.sector || '';
+  document.getElementById('ed-fecha').value = p.fecha || '';
+  const esManual = p.tenenciaManual != null;
+  document.getElementById('ed-manual-wrap').style.display = esManual ? 'flex' : 'none';
+  document.getElementById('ed-manual').value = esManual ? p.tenenciaManual : '';
+  calcularImpacto();
+  document.getElementById('editorOverlay').classList.add('abierto');
+  document.getElementById('ed-cant').focus();
+}
+
+function cerrarEditor() {
+  document.getElementById('editorOverlay').classList.remove('abierto');
+  edPosicionOriginal = null;
+}
+
+// Se muestra antes de guardar para que no haya sorpresas: la rentabilidad en
+// porcentaje no se mueve si solo cambia la cantidad, pero la tenencia si.
+function calcularImpacto() {
+  const el = document.getElementById('edImpacto');
+  if (!el || !edPosicionOriginal) return;
+  const o = edPosicionOriginal;
+  const cant = parseFloat(document.getElementById('ed-cant').value);
+  const ppc = parseFloat(document.getElementById('ed-ppc').value);
+  const precio = parseFloat(document.getElementById('ed-precio').value);
+  if (!(cant >= 0) || !(ppc >= 0) || !(precio >= 0)) { el.innerHTML = 'Completá cantidad, PPC y precio.'; return; }
+
+  const antes = { ten: o.precio * o.cant, inv: o.ppc * o.cant };
+  const ahora = { ten: precio * cant, inv: ppc * cant };
+  antes.pnl = antes.ten - antes.inv; ahora.pnl = ahora.ten - ahora.inv;
+  const rentAntes = antes.inv ? antes.pnl / antes.inv : 0;
+  const rentAhora = ahora.inv ? ahora.pnl / ahora.inv : 0;
+  const mismaRent = Math.abs(rentAntes - rentAhora) < 0.00005;
+
+  el.innerHTML = `
+    <div>Tenencia: <b>${fmt(antes.ten)}</b> → <b>${fmt(ahora.ten)}</b> (${fmt(ahora.ten - antes.ten)})</div>
+    <div>P&L: <b>${fmt(antes.pnl)}</b> → <b>${fmt(ahora.pnl)}</b></div>
+    <div>Rentabilidad: <b>${fmtPct(rentAntes)}</b> → <b>${fmtPct(rentAhora)}</b>${mismaRent ? ' · no cambia' : ''}</div>`;
+}
+
+function guardarEdicion() {
+  const id = parseFloat(document.getElementById('ed-id').value);
+  const p = state.positions.find(x => x.id === id);
+  if (!p) { cerrarEditor(); return; }
+
+  const cant = parseFloat(document.getElementById('ed-cant').value);
+  const ppc = parseFloat(document.getElementById('ed-ppc').value);
+  const precio = parseFloat(document.getElementById('ed-precio').value);
+  if (!(cant >= 0) || !(ppc >= 0) || !(precio >= 0)) { showToast('Cantidad, PPC y precio no pueden quedar vacíos'); return; }
+
+  p.cant = cant;
+  p.ppc = ppc;
+  p.precio = precio;
+  p.precioUSD = parseFloat(document.getElementById('ed-precioUSD').value) || 0;
+  p.tipo = document.getElementById('ed-tipo').value;
+  p.sector = document.getElementById('ed-sector').value.trim();
+  p.fecha = document.getElementById('ed-fecha').value;
+  if (p.tenenciaManual != null) {
+    const m = parseFloat(document.getElementById('ed-manual').value);
+    p.tenenciaManual = isNaN(m) ? p.tenenciaManual : m;
+  }
+
+  cerrarEditor();
+  saveState(); renderAll();
+  showToast(`${p.ticket} corregido`);
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && document.getElementById('editorOverlay').classList.contains('abierto')) cerrarEditor();
+});
 
 function deletePos(id) {
   state.positions = state.positions.filter(p => p.id !== id);
