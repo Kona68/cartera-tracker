@@ -35,17 +35,28 @@ export async function getIOLPrice(ticker, mercado = 'bCBA') {
   return data?.ultimoPrecio ?? data?.puntas?.[0]?.precioVenta ?? null;
 }
 
-// Serie diaria ajustada. Sin ajustar, un split como el de YPFD parte el grafico al medio.
+// Serie diaria. IOL contesta la ajustada vacia para los CEDEARs y varias acciones,
+// asi que se cae a sinAjustar: es la unica que trae datos para la mayoria del panel.
+// Ojo que ahi los splits (YPFD partio 10:1) aparecen como un derrumbe que no existio;
+// eso se corrige aparte, detectando el salto.
 export async function getIOLSerie(ticker, desde, hasta, mercado = 'bCBA') {
   const token = await getIOLToken();
-  const url = `https://api.invertironline.com/api/v2/${mercado}/Titulos/${ticker}/Cotizacion/seriehistorica/${desde}/${hasta}/ajustada`;
-  const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-  if (!res.ok) return { error: res.status, puntos: [] };
-  const data = await res.json();
-  if (!Array.isArray(data)) return { error: 'respuesta no es una lista', puntos: [] };
-  const puntos = data
-    .filter(d => d?.fechaHora && d?.ultimoPrecio)
-    .map(d => ({ fecha: String(d.fechaHora).slice(0, 10), precio: d.ultimoPrecio }))
-    .sort((a, b) => a.fecha.localeCompare(b.fecha));
-  return { error: null, puntos };
+  const pedir = async (ajuste) => {
+    const url = `https://api.invertironline.com/api/v2/${mercado}/Titulos/${ticker}/Cotizacion/seriehistorica/${desde}/${hasta}/${ajuste}`;
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (!res.ok) return { status: res.status, puntos: [] };
+    const data = await res.json();
+    if (!Array.isArray(data)) return { status: 'respuesta no es una lista', puntos: [] };
+    const puntos = data
+      .filter(d => d?.fechaHora && d?.ultimoPrecio > 0)
+      .map(d => ({ fecha: String(d.fechaHora).slice(0, 10), precio: d.ultimoPrecio }))
+      .sort((a, b) => a.fecha.localeCompare(b.fecha));
+    return { status: res.status, puntos };
+  };
+
+  let r = await pedir('ajustada');
+  if (r.puntos.length) return { error: null, ajuste: 'ajustada', puntos: r.puntos };
+  const sa = await pedir('sinAjustar');
+  if (sa.puntos.length) return { error: null, ajuste: 'sinAjustar', puntos: sa.puntos };
+  return { error: r.status === 200 ? sa.status : r.status, ajuste: null, puntos: [] };
 }

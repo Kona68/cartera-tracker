@@ -38,14 +38,21 @@ export default async function handler(req, res) {
 
   const lista = tickers.split(',').map(t => t.trim().toUpperCase()).filter(Boolean);
   const series = {};
+  const meta = {};
   const fallas = {};
 
   await Promise.allSettled(lista.map(async ticker => {
     let r = await getIOLSerie(ticker, d, h, 'bCBA');
-    if (!r.puntos.length) r = await getIOLSerie(ticker, d, h, 'nYSE');
-    if (r.puntos.length) series[ticker] = r.puntos;
-    else fallas[ticker] = r.error ?? 'sin datos';
+    r.mercado = 'bCBA';
+    if (!r.puntos.length) { r = await getIOLSerie(ticker, d, h, 'nYSE'); r.mercado = 'nYSE'; }
+    if (r.puntos.length) {
+      series[ticker] = r.puntos;
+      meta[ticker] = { mercado: r.mercado, ajuste: r.ajuste, n: r.puntos.length,
+                       desde: r.puntos[0].fecha, hasta: r.puntos[r.puntos.length - 1].fecha };
+    } else {
+      fallas[ticker] = r.error ?? 'sin datos';
+    }
   }));
 
-  return res.status(200).json({ desde: d, hasta: h, series, fallas });
+  return res.status(200).json({ desde: d, hasta: h, meta, fallas, series });
 }
