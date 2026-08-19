@@ -1,3 +1,14 @@
 {
-  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ],
+  "crons": [
+    {
+      "path": "/api/alertas",
+      "schedule": "0 21 * * 1-5"
+    }
+  ]
 }
