@@ -66,6 +66,14 @@
   #editorOverlay .acciones .btn { flex: 1; }
   #edImpacto { font-size: 11.5px; line-height: 1.7; color: var(--muted); background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; margin-bottom: 20px; }
   #edImpacto b { color: var(--text); font-weight: 500; }
+  #syncBanner { display: none; position: sticky; top: 69px; z-index: 90; margin: 0 32px 20px;
+    background: rgba(255,77,109,.1); border: 1px solid var(--red); border-radius: 8px;
+    padding: 14px 18px; align-items: center; gap: 16px; }
+  #syncBanner.visible { display: flex; }
+  #syncBanner .txt { flex: 1; font-size: 12px; color: var(--text); line-height: 1.6; }
+  #syncBanner .txt b { color: var(--red); }
+  #syncBanner button { background: var(--red); border: none; color: #fff; font-family: var(--mono);
+    font-size: 11.5px; padding: 8px 16px; border-radius: 6px; cursor: pointer; white-space: nowrap; }
   .btn-icono { background: transparent; border: 1px solid var(--border); color: var(--muted); padding: 4px 9px; border-radius: 5px; font-family: var(--mono); font-size: 11px; cursor: pointer; transition: all .2s; }
   .btn-icono:hover { color: var(--accent); border-color: var(--accent); }
   .section { display: none; }
@@ -199,6 +207,11 @@
     <button onclick="cerrarSesion()" title="Cerrar sesión" style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:6px 12px;border-radius:6px;font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .2s" onmouseover="this.style.color='var(--red)';this.style.borderColor='var(--red)'" onmouseout="this.style.color='var(--muted)';this.style.borderColor='var(--border)'">Salir</button>
   </div>
 </header>
+
+<div id="syncBanner">
+  <div class="txt"></div>
+  <button onclick="reintentarGuardado()">Reintentar</button>
+</div>
 
 <div class="tabs">
   <div class="tab active" onclick="showTab('dashboard')">Dashboard</div>
@@ -2149,6 +2162,38 @@ function abrirApp() {
   initApp();
 }
 
+// Marca de tiempo del state que tenemos cargado. Sirve para no pisar algo mas
+// nuevo que haya guardado otra maquina.
+let estadoRemotoAl = null;
+
+async function supabaseMarcaDeTiempo(key) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/portfolio_state?id=eq.${key}&select=updated_at`, {
+    headers: await authHeaders()
+  });
+  if (!res.ok) throw new Error('la nube contestó ' + res.status);
+  const filas = await res.json();
+  return filas.length ? filas[0].updated_at : null;
+}
+
+// El fallo de guardado tiene que ser imposible de no ver: antes era una linea
+// gris que se borraba a los dos segundos, y asi se perdio una semana de carga.
+function mostrarBannerSync(html) {
+  const b = document.getElementById('syncBanner');
+  if (!b) return;
+  b.querySelector('.txt').innerHTML = html;
+  b.classList.add('visible');
+}
+
+function ocultarBannerSync() {
+  const b = document.getElementById('syncBanner');
+  if (b) b.classList.remove('visible');
+}
+
+async function reintentarGuardado() {
+  ocultarBannerSync();
+  await saveState();
+}
+
 // Helpers REST genericos, para las tablas nuevas.
 async function supabaseSelect(tabla, query) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${tabla}?select=${query}`, { headers: await authHeaders() });
@@ -2207,6 +2252,7 @@ async function refreshPrecios() {
 async function initApp() {
   showSyncStatus('Sincronizando...', 'var(--yellow)');
   try {
+    estadoRemotoAl = await supabaseMarcaDeTiempo('state');
     const cloudState = await supabaseLoad('state');
     if (cloudState && cloudState.positions && cloudState.positions.length) {
       state = cloudState;
@@ -2248,11 +2294,32 @@ saveState = async function() {
   // Siempre guardar en localStorage como backup inmediato
   localStorage.setItem('portfolio_v4', JSON.stringify(state));
   try {
+    // Si la nube tiene algo mas nuevo que lo que cargamos, guardo otra maquina
+    // mientras tanto. Pisarlo a ciegas es exactamente como se perdio una semana.
+    const remoto = await supabaseMarcaDeTiempo('state');
+    if (remoto && estadoRemotoAl && remoto > estadoRemotoAl) {
+      const seguir = confirm(
+        'La cartera en la nube cambió desde otro dispositivo mientras tenías esta pestaña abierta.\n\n' +
+        'En la nube: ' + new Date(remoto).toLocaleString('es-AR') + '\n' +
+        'Vos cargaste: ' + new Date(estadoRemotoAl).toLocaleString('es-AR') + '\n\n' +
+        'Si guardás ahora, pisás lo que hizo el otro dispositivo.\n' +
+        'Cancelá y recargá la página para traer lo más nuevo.'
+      );
+      if (!seguir) {
+        mostrarBannerSync('<b>No se guardó.</b> La nube tiene una versión más nueva. Recargá la página para traerla — lo que hiciste acá quedó en este navegador.');
+        return;
+      }
+    }
+
     await supabaseSave('state', state);
-    showSyncStatus('✓ Guardado', 'var(--accent)');
+    estadoRemotoAl = await supabaseMarcaDeTiempo('state');
+    ocultarBannerSync();
+    showSyncStatus('✓ Guardado en la nube', 'var(--accent)');
     setTimeout(() => showSyncStatus(''), 2000);
   } catch(e) {
-    showSyncStatus('Guardado local (sin conexión a nube)', 'var(--yellow)');
+    mostrarBannerSync('<b>No se guardó en la nube.</b> ' + e.message +
+      ' · Lo que cargues queda solo en este navegador y se pierde si abrís la cartera en otro lado. No sigas cargando hasta resolverlo.');
+    showSyncStatus('');
   }
 };
 
