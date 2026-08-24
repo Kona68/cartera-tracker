@@ -408,6 +408,43 @@
       <div id="liquidezTable"></div>
     </div>
 
+    <!-- Cuentas en pesos, carga manual -->
+    <div class="form-section" style="border-color:rgba(0,119,255,0.3)">
+      <div class="form-title" style="color:var(--accent2)">◈ Cuentas en pesos · carga semanal</div>
+      <p style="color:var(--muted);font-size:12px;margin-bottom:20px;line-height:1.6">
+        Para las cuentas donde no hay cotización de dónde levantar, cargás el valor en pesos y listo.
+        Guardá uno por semana y la app calcula sola cuánto se movió respecto de la carga anterior.
+      </p>
+      <div style="display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap;margin-bottom:20px">
+        <div class="field" style="min-width:150px">
+          <label>Cuenta</label>
+          <select id="man-cuenta" onchange="toggleCuentaNueva()"></select>
+        </div>
+        <div class="field" id="man-nueva-wrap" style="display:none;min-width:160px">
+          <label>Nombre de la cuenta</label>
+          <input type="text" id="man-nueva" placeholder="Ej: Ripio">
+        </div>
+        <div class="field" style="min-width:150px">
+          <label>Fecha</label>
+          <input type="date" id="man-fecha">
+        </div>
+        <div class="field" style="flex:1;min-width:160px">
+          <label>Valor total (ARS)</label>
+          <input type="number" id="man-monto" placeholder="906076" step="any">
+        </div>
+        <button class="btn" onclick="guardarValorManual()">Guardar valor</button>
+      </div>
+      <div id="manualCards" class="summary-grid" style="margin-bottom:0"></div>
+    </div>
+
+    <div class="table-wrap">
+      <div class="table-header">
+        <div class="table-title">Historial de cargas manuales</div>
+        <div style="font-size:11px;color:var(--muted)">La carga más reciente de cada cuenta es la que vale</div>
+      </div>
+      <div id="manualTable" style="overflow-x:auto"></div>
+    </div>
+
     <!-- Retiro de capital -->
     <div class="form-section" style="border-color:rgba(255,209,102,0.3)">
       <div class="form-title" style="color:var(--yellow)">↗ Registrar Retiro de Capital</div>
@@ -612,6 +649,7 @@ function loadState() {
         if (!state.aportes)  state.aportes  = [];
         if (!state.ventas)   state.ventas   = [];
         if (!state.retiros)  state.retiros  = [];
+        if (!state.manualHist) state.manualHist = [];
         return;
       }
     } catch(e) {}
@@ -685,7 +723,7 @@ function showTab(name) {
   if (name === 'graficos') renderCharts();
   if (name === 'rendimiento') renderRendimiento();
   if (name === 'rotacion') renderRotacion();
-  if (name === 'liquidez') { renderLiquidez(); renderAportes(); renderMovimientos(); }
+  if (name === 'liquidez') { renderLiquidez(); renderAportes(); renderMovimientos(); renderManuales(); }
 }
 
 // =========================================================
@@ -852,6 +890,126 @@ function addPosition() {
   }
   saveState(); renderAll();
   ['f-ticket','f-ppc','f-cant','f-precio','f-precioUSD','f-fecha','f-tc'].forEach(id => document.getElementById(id).value = '');
+}
+
+// =========================================================
+// CUENTAS EN PESOS (CARGA MANUAL)
+// =========================================================
+// Cripto no tiene cotizacion de donde levantar, y llevarlo en nominales obliga a
+// seguir el precio de cada moneda. Se carga el total en pesos, una vez por semana,
+// y el ultimo valor cargado es el que manda.
+function cuentasManuales() {
+  return state.positions.filter(p => p.tenenciaManual != null);
+}
+
+function historialDe(ticket) {
+  return (state.manualHist || [])
+    .filter(h => h.ticket === ticket)
+    .sort((a, b) => a.fecha.localeCompare(b.fecha));
+}
+
+function refrescarSelectorCuentas() {
+  const sel = document.getElementById('man-cuenta');
+  if (!sel) return;
+  const previo = sel.value;
+  sel.innerHTML = cuentasManuales().map(p => `<option>${p.ticket}</option>`).join('')
+    + '<option value="__nueva">+ cuenta nueva</option>';
+  if (previo) sel.value = previo;
+  const f = document.getElementById('man-fecha');
+  if (f && !f.value) f.value = new Date().toISOString().split('T')[0];
+}
+
+function toggleCuentaNueva() {
+  const esNueva = document.getElementById('man-cuenta').value === '__nueva';
+  document.getElementById('man-nueva-wrap').style.display = esNueva ? 'flex' : 'none';
+}
+
+function guardarValorManual() {
+  const sel = document.getElementById('man-cuenta').value;
+  const ticket = sel === '__nueva'
+    ? (document.getElementById('man-nueva').value || '').trim()
+    : sel;
+  const fecha = document.getElementById('man-fecha').value;
+  const monto = parseFloat(document.getElementById('man-monto').value);
+
+  if (!ticket) { showToast('Poné un nombre para la cuenta'); return; }
+  if (!fecha) { showToast('Elegí la fecha'); return; }
+  if (!(monto >= 0)) { showToast('Poné el valor en pesos'); return; }
+
+  if (!state.positions.some(p => p.ticket === ticket)) {
+    state.positions.push({ id: Date.now(), ticket, tipo: 'Crypto', sector: 'Crypto',
+      ppc: 0, cant: 0, precio: 0, precioUSD: 0, fecha, tc: state.tc, tenenciaManual: monto });
+  }
+
+  state.manualHist = state.manualHist || [];
+  // Una carga por cuenta y fecha: volver a guardar el mismo dia pisa el valor.
+  const existente = state.manualHist.find(h => h.ticket === ticket && h.fecha === fecha);
+  if (existente) existente.monto = monto;
+  else state.manualHist.push({ id: Date.now(), ticket, fecha, monto });
+
+  recalcularTenenciasManuales();
+  document.getElementById('man-monto').value = '';
+  document.getElementById('man-nueva').value = '';
+  saveState(); renderAll();
+  showToast(`${ticket}: ${fmt(monto)} al ${fecha}`);
+}
+
+function recalcularTenenciasManuales() {
+  for (const p of cuentasManuales()) {
+    const h = historialDe(p.ticket);
+    if (h.length) p.tenenciaManual = h[h.length - 1].monto;
+  }
+}
+
+function borrarValorManual(id) {
+  state.manualHist = (state.manualHist || []).filter(h => h.id !== id);
+  recalcularTenenciasManuales();
+  saveState(); renderAll();
+  showToast('Carga eliminada');
+}
+
+function renderManuales() {
+  refrescarSelectorCuentas();
+  const cont = document.getElementById('manualCards');
+  const tabla = document.getElementById('manualTable');
+  if (!cont || !tabla) return;
+
+  const cuentas = cuentasManuales();
+  cont.innerHTML = cuentas.map(p => {
+    const h = historialDe(p.ticket);
+    const ult = h[h.length - 1];
+    const ant = h[h.length - 2];
+    const varPct = (ult && ant && ant.monto) ? ult.monto / ant.monto - 1 : null;
+    return `<div class="card ${varPct === null ? '' : (varPct >= 0 ? 'positive' : 'negative')}">
+      <div class="card-label">${p.ticket}</div>
+      <div class="card-value">${fmt(p.tenenciaManual || 0)}</div>
+      <div class="card-sub">${ult ? 'Cargado el ' + ult.fecha : 'Sin cargas todavía'}${
+        varPct === null ? '' : ` · <span class="${varPct >= 0 ? 'pos' : 'neg'}">${fmtPct(varPct)}</span> vs anterior`}</div>
+    </div>`;
+  }).join('') || '<div class="card"><div class="card-label">Sin cuentas</div><div class="card-sub">Agregá una con "+ cuenta nueva".</div></div>';
+
+  const filas = (state.manualHist || [])
+    .slice()
+    .sort((a, b) => b.fecha.localeCompare(a.fecha) || a.ticket.localeCompare(b.ticket));
+
+  tabla.innerHTML = filas.length ? `
+    <table>
+      <thead><tr><th>Fecha</th><th>Cuenta</th><th>Valor ARS</th><th>Valor USD</th><th>vs carga anterior</th><th></th></tr></thead>
+      <tbody>${filas.map(h => {
+        const propio = historialDe(h.ticket);
+        const i = propio.findIndex(x => x.id === h.id);
+        const ant = i > 0 ? propio[i - 1] : null;
+        const v = (ant && ant.monto) ? h.monto / ant.monto - 1 : null;
+        return `<tr>
+          <td class="neutral">${h.fecha}</td>
+          <td><span class="ticker">${h.ticket}</span></td>
+          <td>${fmt(h.monto)}</td>
+          <td class="neutral">${fmtUSD(h.monto / state.tc)}</td>
+          <td class="${v === null ? 'neutral' : (v >= 0 ? 'pos' : 'neg')}">${v === null ? '—' : fmtPct(v)}</td>
+          <td><button class="btn-icono" onclick="borrarValorManual(${h.id})">✕</button></td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table>` : '<div style="padding:20px;color:var(--muted)">Todavía no cargaste ningún valor.</div>';
 }
 
 // =========================================================
@@ -1754,7 +1912,7 @@ function renderAll() {
   renderDashboard(); renderDetalle(); renderOps();
   renderSnapshotHistory(); renderWeeklyHistory();
   renderLiquidez(); renderAportes(); renderMovimientos(); renderPnlRealizado();
-  renderRendimiento(); renderRotacion();
+  renderRendimiento(); renderRotacion(); renderManuales();
 }
 
 // =========================================================
@@ -2260,6 +2418,7 @@ async function initApp() {
       if (!state.aportes)  state.aportes  = [];
       if (!state.ventas)   state.ventas   = [];
       if (!state.retiros)  state.retiros  = [];  // migración segura: no pierde datos existentes
+      if (!state.manualHist) state.manualHist = [];
     } else {
       loadState();
     }
