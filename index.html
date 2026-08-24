@@ -930,9 +930,15 @@ document.addEventListener('keydown', e => {
 });
 
 function deletePos(id) {
-  state.positions = state.positions.filter(p => p.id !== id);
+  const p = state.positions.find(x => x.id === id);
+  if (!p) return;
+  // Va con confirmacion: el boton de borrar quedo al lado del de editar, y no hay
+  // deshacer. Borrar una posicion se lleva puesta la cantidad, el PPC y la fecha.
+  const c = calcPos(p);
+  if (!confirm(`¿Eliminar ${p.ticket} de la cartera?\n\n${p.cant} nominales · tenencia ${fmt(c.tenencia)}\n\nEsto no se puede deshacer. Si solo querés corregir la cantidad, cancelá y usá el botón de editar.`)) return;
+  state.positions = state.positions.filter(x => x.id !== id);
   saveState(); renderAll();
-  showToast('Posición eliminada');
+  showToast(`${p.ticket} eliminada`);
 }
 
 // =========================================================

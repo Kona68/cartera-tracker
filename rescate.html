@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Rescate de datos locales</title>
+<style>
+  :root { --bg:#0a0c0f; --surface:#111318; --surface2:#181c22; --border:#232830;
+          --accent:#00e5a0; --red:#ff4d6d; --yellow:#ffd166; --text:#e8edf5; --muted:#5a6478; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:var(--bg); color:var(--text); font-family:'DM Mono',ui-monospace,Menlo,monospace;
+         font-size:13px; line-height:1.6; padding:32px 24px 64px; }
+  .caja { max-width:820px; margin:0 auto; display:flex; flex-direction:column; gap:20px; }
+  h1 { font-size:22px; font-weight:700; letter-spacing:-.5px; color:var(--accent); }
+  .sub { color:var(--muted); font-size:12.5px; line-height:1.7; }
+  .tarjeta { background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:20px; }
+  .fila { display:flex; justify-content:space-between; gap:16px; padding:9px 0; border-bottom:1px solid var(--border); }
+  .fila:last-child { border-bottom:none; }
+  .k { color:var(--muted); }
+  .ok { color:var(--accent); } .vacio { color:var(--red); }
+  textarea { width:100%; height:200px; background:var(--surface2); border:1px solid var(--border);
+             color:var(--text); border-radius:8px; padding:14px; font-family:inherit; font-size:11px;
+             resize:vertical; outline:none; }
+  .acciones { display:flex; gap:10px; flex-wrap:wrap; }
+  button { background:var(--accent); border:none; color:var(--bg); font-family:inherit; font-weight:500;
+           font-size:12.5px; padding:11px 20px; border-radius:6px; cursor:pointer; }
+  button.sec { background:transparent; border:1px solid var(--border); color:var(--muted); }
+  .aviso { background:rgba(255,209,102,.07); border:1px solid rgba(255,209,102,.25);
+           border-left:3px solid var(--yellow); border-radius:8px; padding:16px 18px;
+           color:var(--muted); font-size:12.5px; line-height:1.7; }
+  .aviso strong { color:var(--text); }
+</style>
+</head>
+<body>
+<div class="caja">
+  <h1>Rescate de datos locales</h1>
+  <p class="sub">Esta página <strong>solo lee</strong> lo que quedó guardado en este navegador. No se conecta a internet, no guarda nada y no toca la cartera de la nube. Es segura de abrir.</p>
+
+  <div class="aviso">
+    <strong>No abras la app en esta computadora hasta haber copiado esto.</strong> Al abrirla, si actualiza precios, sobrescribe la copia local con la de la nube y lo que hiciste acá se pierde.
+  </div>
+
+  <div class="tarjeta" id="resumen"></div>
+
+  <div class="tarjeta" style="display:flex;flex-direction:column;gap:14px">
+    <div class="k">Contenido para copiar</div>
+    <textarea id="salida" readonly></textarea>
+    <div class="acciones">
+      <button onclick="copiar()">Copiar al portapapeles</button>
+      <button class="sec" onclick="bajar()">Descargar archivo</button>
+    </div>
+    <div class="sub" id="estado"></div>
+  </div>
+</div>
+
+<script>
+const CLAVES = ['portfolio_v4', 'portfolio_snapshots', 'portfolio_weekly'];
+const datos = {};
+const filas = [];
+
+for (const k of CLAVES) {
+  const bruto = localStorage.getItem(k);
+  if (bruto === null) {
+    filas.push(`<div class="fila"><span class="k">${k}</span><span class="vacio">no existe</span></div>`);
+    continue;
+  }
+  datos[k] = bruto;
+  let detalle = `${(bruto.length / 1024).toFixed(1)} KB`;
+  try {
+    const j = JSON.parse(bruto);
+    if (k === 'portfolio_v4' && j.positions) {
+      detalle = `${j.positions.length} posiciones · ${(j.ventas || []).length} ventas · ${detalle}`;
+    } else if (Array.isArray(j)) {
+      detalle = `${j.length} registros · ${detalle}`;
+    }
+  } catch (e) {}
+  filas.push(`<div class="fila"><span class="k">${k}</span><span class="ok">${detalle}</span></div>`);
+}
+
+// Los tickers y cantidades, para que puedas ver de un vistazo si es la version que buscabas.
+try {
+  const j = JSON.parse(datos['portfolio_v4'] || '{}');
+  if (j.positions) {
+    const lista = j.positions.map(p => `${p.ticket} ${p.cant}`).join(' · ');
+    filas.push(`<div class="fila" style="display:block"><div class="k" style="margin-bottom:6px">Posiciones guardadas acá</div><div>${lista}</div></div>`);
+  }
+} catch (e) {}
+
+document.getElementById('resumen').innerHTML = filas.join('');
+document.getElementById('salida').value = JSON.stringify(datos, null, 2);
+
+function copiar() {
+  const t = document.getElementById('salida');
+  t.select();
+  navigator.clipboard.writeText(t.value)
+    .then(() => document.getElementById('estado').textContent = 'Copiado. Pegámelo en el chat.')
+    .catch(() => document.getElementById('estado').textContent = 'No se pudo copiar solo: seleccioná el texto y usá Ctrl+C.');
+}
+
+function bajar() {
+  const blob = new Blob([document.getElementById('salida').value], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'cartera-local.json';
+  a.click();
+  document.getElementById('estado').textContent = 'Descargado como cartera-local.json';
+}
+</script>
+</body>
+</html>
