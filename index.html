@@ -224,6 +224,7 @@
   <div class="tab" onclick="showTab('cartera')">Cartera</div>
   <div class="tab" onclick="showTab('rendimiento')">Rendimiento</div>
   <div class="tab" onclick="showTab('rotacion')">Rotación</div>
+  <div class="tab" onclick="showTab('fundamentals')">Fundamentals</div>
   <div class="tab" onclick="showTab('graficos')">Gráficos</div>
   <div class="tab" onclick="showTab('liquidez')">Liquidez</div>
   <div class="tab" onclick="showTab('cargar')">Cargar Operación</div>
@@ -323,6 +324,36 @@
     <div class="table-wrap">
       <div class="table-header"><div class="table-title">Tus posiciones y las que estás mirando</div></div>
       <div id="rotTable" style="overflow-x:auto"></div>
+    </div>
+  </div>
+
+  <!-- FUNDAMENTALS -->
+  <div id="tab-fundamentals" class="section">
+    <div class="periodos">
+      <div class="moneda">
+        <button class="moneda-btn active" data-fvista="cartera" onclick="setVistaFund('cartera')">Mi cartera</button>
+        <button class="moneda-btn" data-fvista="todo" onclick="setVistaFund('todo')">Todo lo cargado</button>
+      </div>
+      <button class="periodo-btn" style="margin-left:auto" onclick="actualizarFundamentals()">↻ Actualizar fundamentals</button>
+    </div>
+    <div id="fundAviso" class="aviso"></div>
+    <div class="summary-grid" id="fundResumen"></div>
+    <div class="table-wrap">
+      <div class="table-header">
+        <div class="table-title">Fundamentals por empresa</div>
+        <div style="font-size:11px;color:var(--muted)" id="fundFuente"></div>
+      </div>
+      <div id="fundTable" style="overflow-x:auto"></div>
+    </div>
+    <div class="form-section" style="padding:20px">
+      <div style="font-size:11.5px;color:var(--muted);line-height:1.8">
+        <strong style="color:var(--text)">Cómo leer esto.</strong>
+        <b>ROE</b> y <b>ROA</b> dicen cuánto gana la empresa sobre el capital que usa: es la vara de Terry Smith, y mira la calidad del negocio, no el precio.
+        <b>Margen operativo</b> es cuánto le queda de cada peso que vende antes de impuestos e intereses.
+        <b>P/E</b>, <b>P/B</b> y <b>EV/EBITDA</b> son precio, no calidad: una empresa buenísima puede ser una mala inversión si se paga de más.
+        <b>Crecimiento</b> es contra el mismo trimestre del año anterior.
+        Los ETF (SPY, QQQ) no aparecen: no tienen balance propio.
+      </div>
     </div>
   </div>
 
@@ -600,6 +631,14 @@
       <div id="pnlRealizadoTable"></div>
     </div>
 
+    <div class="table-wrap">
+      <div class="table-header">
+        <div class="table-title">Compras registradas</div>
+        <div style="font-size:11px;color:var(--muted)" id="comprasResumen"></div>
+      </div>
+      <div id="comprasTable" style="overflow-x:auto"></div>
+    </div>
+
     <div class="table-wrap" style="margin-top:20px">
       <div class="table-header"><div class="table-title">Posiciones Actuales</div></div>
       <div id="opTable"></div>
@@ -666,6 +705,7 @@ function loadState() {
         if (!state.ventas)   state.ventas   = [];
         if (!state.retiros)  state.retiros  = [];
         if (!state.manualHist) state.manualHist = [];
+        if (!state.compras) state.compras = [];
         return;
       }
     } catch(e) {}
@@ -739,6 +779,7 @@ function showTab(name) {
   if (name === 'graficos') renderCharts();
   if (name === 'rendimiento') renderRendimiento();
   if (name === 'rotacion') renderRotacion();
+  if (name === 'fundamentals') renderFundamentals();
   if (name === 'liquidez') { renderLiquidez(); renderAportes(); renderMovimientos(); renderManuales(); }
 }
 
@@ -894,6 +935,7 @@ function addPosition() {
   const tc = parseFloat(document.getElementById('f-tc').value) || state.tc;
   if (!ticket || !ppc || !cant || !precio) { showToast('Completá todos los campos obligatorios'); return; }
   const existing = state.positions.find(p => p.ticket === ticket);
+  const ppcAnterior = existing ? existing.ppc : null;
   if (existing) {
     const totalCantNueva = existing.cant + cant;
     const nuevoPPC = (existing.ppc * existing.cant + ppc * cant) / totalCantNueva;
@@ -904,8 +946,148 @@ function addPosition() {
     state.positions.push({ id: Date.now(), ticket, tipo, sector, ppc, cant, precio, precioUSD, fecha, tc });
     showToast(`${ticket} agregado a la cartera`);
   }
+
+  // Cada compra deja su propia fila. Antes solo se promediaba el PPC y la operacion
+  // se perdia: sin esto no se puede reconstruir que habia en cada momento, y la
+  // rentabilidad del año termina siendo una aproximacion en vez de un numero.
+  state.compras = state.compras || [];
+  state.compras.push({
+    id: Date.now(), ticket, tipo, cant, precio: ppc,
+    fecha: fecha || new Date().toISOString().split('T')[0],
+    tc, total: ppc * cant, ppcAnterior,
+    ppcNuevo: state.positions.find(p => p.ticket === ticket).ppc
+  });
   saveState(); renderAll();
   ['f-ticket','f-ppc','f-cant','f-precio','f-precioUSD','f-fecha','f-tc'].forEach(id => document.getElementById(id).value = '');
+}
+
+// =========================================================
+// FUNDAMENTALS
+// =========================================================
+// Todo lo demas de esta app sale de precios. Esto es lo unico que mira el negocio
+// de abajo: cuanto gana sobre el capital que usa, cuanto le queda de lo que vende
+// y cuanto se esta pagando por eso. Se refresca a mano porque el plan gratuito de
+// la fuente permite 25 llamadas por dia y estos numeros cambian por trimestre.
+let fundamentals = {};
+let vistaFund = 'cartera';
+
+function setVistaFund(v) {
+  vistaFund = v;
+  document.querySelectorAll('[data-fvista]').forEach(b => b.classList.toggle('active', b.dataset.fvista === v));
+  renderFundamentals();
+}
+
+async function cargarFundamentals() {
+  const filas = await supabaseSelect('fundamentals', '*');
+  fundamentals = {};
+  for (const f of (filas || [])) fundamentals[f.ticker] = f;
+}
+
+async function actualizarFundamentals() {
+  const tickers = state.positions.filter(p => p.tipo !== 'Crypto' && p.cant > 0).map(p => p.ticket);
+  if (!tickers.length) { showToast('No hay posiciones'); return; }
+  showSyncStatus('Trayendo fundamentals...', 'var(--yellow)');
+  try {
+    const res = await fetch(`/api/fundamentals?tickers=${encodeURIComponent(tickers.join(','))}`);
+    const data = await res.json();
+    if (data.error) { showSyncStatus('Fundamentals: ' + data.error, 'var(--red)'); return; }
+    const filas = Object.values(data.datos || {});
+    if (filas.length) {
+      await supabaseUpsert('fundamentals', filas);
+      await cargarFundamentals();
+    }
+    renderFundamentals(data.saltados);
+    showSyncStatus(`✓ ${data.traidos} de ${data.pedidos}`, 'var(--accent)');
+    setTimeout(() => showSyncStatus(''), 4000);
+  } catch (e) {
+    showSyncStatus('No se pudo traer fundamentals', 'var(--red)');
+  }
+}
+
+function celdaFund(v, tipo) {
+  if (v === null || v === undefined) return '<td class="neutral">—</td>';
+  if (tipo === 'pct') {
+    const cls = v >= 0.15 ? 'pos' : (v < 0 ? 'neg' : '');
+    return `<td class="${cls}">${(v * 100).toFixed(1)}%</td>`;
+  }
+  if (tipo === 'crec') return `<td class="${v >= 0 ? 'pos' : 'neg'}">${(v * 100).toFixed(1)}%</td>`;
+  if (tipo === 'mult') return `<td class="neutral">${v.toFixed(1)}x</td>`;
+  if (tipo === 'cap') return `<td class="neutral">${v >= 1e12 ? (v/1e12).toFixed(2)+' B' : (v/1e9).toFixed(1)+' MM'}</td>`;
+  return `<td>${v}</td>`;
+}
+
+function renderFundamentals(saltados) {
+  const cont = document.getElementById('fundTable');
+  if (!cont) return;
+  const pesos = {}, total = state.positions.filter(p => p.tipo !== 'Crypto' && p.cant > 0)
+    .reduce((a, p) => a + p.precio * p.cant, 0);
+  state.positions.forEach(p => { if (p.cant > 0 && total) pesos[p.ticket] = (p.precio * p.cant) / total; });
+
+  const propios = new Set(state.positions.map(p => p.ticket));
+  let filas = Object.values(fundamentals);
+  if (vistaFund === 'cartera') filas = filas.filter(f => propios.has(f.ticker));
+  filas.sort((a, b) => (pesos[b.ticker] || 0) - (pesos[a.ticker] || 0));
+
+  const aviso = document.getElementById('fundAviso');
+  const sinDato = state.positions
+    .filter(p => p.tipo !== 'Crypto' && p.cant > 0 && !fundamentals[p.ticket])
+    .map(p => p.ticket);
+  aviso.innerHTML = sinDato.length
+    ? `Sin fundamentals todavía: <strong>${sinDato.join(', ')}</strong>. ` +
+      (saltados && Object.keys(saltados).length
+        ? Object.entries(saltados).map(([t, m]) => `${t}: ${m}`).join(' · ')
+        : 'Tocá "Actualizar fundamentals".')
+    : '';
+
+  const fuente = document.getElementById('fundFuente');
+  const fechas = filas.map(f => f.actualizado_at).filter(Boolean).sort();
+  if (fuente) fuente.textContent = fechas.length
+    ? `Alpha Vantage · último dato traído el ${new Date(fechas[fechas.length - 1]).toLocaleDateString('es-AR')}`
+    : '';
+
+  const res = document.getElementById('fundResumen');
+  if (res) {
+    const conRoe = filas.filter(f => f.roe !== null && pesos[f.ticker]);
+    const roePond = conRoe.reduce((a, f) => a + f.roe * pesos[f.ticker], 0) /
+                    (conRoe.reduce((a, f) => a + pesos[f.ticker], 0) || 1);
+    const conPe = filas.filter(f => f.pe !== null && f.pe > 0 && pesos[f.ticker]);
+    const pePond = conPe.reduce((a, f) => a + f.pe * pesos[f.ticker], 0) /
+                   (conPe.reduce((a, f) => a + pesos[f.ticker], 0) || 1);
+    res.innerHTML = filas.length ? `
+      <div class="card"><div class="card-label">ROE ponderado</div>
+        <div class="card-value ${roePond >= 0.15 ? 'green' : ''}">${(roePond * 100).toFixed(1)}%</div>
+        <div class="card-sub">${conRoe.length} de ${filas.length} empresas con dato</div></div>
+      <div class="card"><div class="card-label">P/E ponderado</div>
+        <div class="card-value">${pePond.toFixed(1)}x</div>
+        <div class="card-sub">sobre ${conPe.length} empresas con ganancias</div></div>
+      <div class="card"><div class="card-label">Empresas cargadas</div>
+        <div class="card-value">${filas.length}</div>
+        <div class="card-sub">${sinDato.length ? sinDato.length + ' sin dato' : 'todas las de la cartera'}</div></div>` : '';
+  }
+
+  cont.innerHTML = filas.length ? `
+    <table>
+      <thead><tr>
+        <th>Ticker</th><th>Empresa</th><th>Sector</th><th>Peso</th>
+        <th>ROE</th><th>ROA</th><th>Mg. oper.</th><th>Mg. neto</th>
+        <th>Crec. ingr.</th><th>Crec. gan.</th>
+        <th>P/E</th><th>Fwd P/E</th><th>P/B</th><th>EV/EBITDA</th><th>Cap.</th>
+      </tr></thead>
+      <tbody>${filas.map(f => `
+        <tr>
+          <td class="ticker">${f.ticker}</td>
+          <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis">${f.nombre || '—'}</td>
+          <td class="neutral" style="font-size:11px">${f.sector || '—'}</td>
+          <td class="neutral">${pesos[f.ticker] ? (pesos[f.ticker] * 100).toFixed(1) + '%' : '—'}</td>
+          ${celdaFund(f.roe, 'pct')}${celdaFund(f.roa, 'pct')}
+          ${celdaFund(f.margen_operativo, 'pct')}${celdaFund(f.margen_neto, 'pct')}
+          ${celdaFund(f.crec_ingresos, 'crec')}${celdaFund(f.crec_ganancias, 'crec')}
+          ${celdaFund(f.pe, 'mult')}${celdaFund(f.forward_pe, 'mult')}
+          ${celdaFund(f.price_to_book, 'mult')}${celdaFund(f.ev_ebitda, 'mult')}
+          ${celdaFund(f.market_cap, 'cap')}
+        </tr>`).join('')}</tbody>
+    </table>` :
+    '<div style="padding:24px;color:var(--muted);font-size:12.5px;line-height:1.8">Todavía no hay fundamentals cargados.<br>Tocá <strong>Actualizar fundamentals</strong> para traerlos.</div>';
 }
 
 // =========================================================
@@ -1115,6 +1297,47 @@ function guardarEdicion() {
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && document.getElementById('editorOverlay').classList.contains('abierto')) cerrarEditor();
 });
+
+function borrarCompra(id) {
+  // Borra el registro, no la posicion: la tenencia se corrige desde el editor.
+  if (!confirm('¿Borrar este registro de compra?\n\nNo toca la posición ni el PPC: sólo saca la fila del historial.')) return;
+  state.compras = (state.compras || []).filter(c => c.id !== id);
+  saveState(); renderCompras();
+  showToast('Registro eliminado');
+}
+
+function renderCompras() {
+  const cont = document.getElementById('comprasTable');
+  if (!cont) return;
+  const compras = [...(state.compras || [])].sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
+  const resumen = document.getElementById('comprasResumen');
+
+  if (!compras.length) {
+    cont.innerHTML = '<div style="padding:20px;color:var(--muted);font-size:12px;line-height:1.8">' +
+      'Todavía no hay compras registradas. Desde ahora, cada una que cargues arriba queda acá con su fecha y su precio.<br>' +
+      'Las anteriores no se pueden recuperar: el sistema promediaba el PPC y no guardaba la operación.</div>';
+    if (resumen) resumen.textContent = '';
+    return;
+  }
+  const total = compras.reduce((s, c) => s + (c.total || 0), 0);
+  if (resumen) resumen.textContent = `${compras.length} ${compras.length === 1 ? 'compra' : 'compras'} · ${fmt(total)} invertidos`;
+
+  cont.innerHTML = `
+    <table>
+      <thead><tr><th>Fecha</th><th>Ticker</th><th>Cant.</th><th>Precio</th><th>Total</th><th>TC</th><th>PPC quedó en</th><th></th></tr></thead>
+      <tbody>${compras.map(c => `
+        <tr>
+          <td class="neutral">${c.fecha || '—'}</td>
+          <td><span class="ticker">${c.ticket}</span></td>
+          <td>${c.cant}</td>
+          <td>${fmt(c.precio)}</td>
+          <td>${fmt(c.total)}</td>
+          <td class="neutral">${c.tc ? c.tc.toLocaleString('es-AR') : '—'}</td>
+          <td class="neutral">${c.ppcNuevo ? fmt(c.ppcNuevo) : '—'}${c.ppcAnterior ? ` <span style="font-size:10px">(venía de ${fmt(c.ppcAnterior)})</span>` : ''}</td>
+          <td><button class="btn-icono" onclick="borrarCompra(${c.id})">✕</button></td>
+        </tr>`).join('')}</tbody>
+    </table>`;
+}
 
 function deletePos(id) {
   const p = state.positions.find(x => x.id === id);
@@ -1928,7 +2151,7 @@ function renderAll() {
   renderDashboard(); renderDetalle(); renderOps();
   renderSnapshotHistory(); renderWeeklyHistory();
   renderLiquidez(); renderAportes(); renderMovimientos(); renderPnlRealizado();
-  renderRendimiento(); renderRotacion(); renderManuales();
+  renderRendimiento(); renderRotacion(); renderManuales(); renderCompras(); renderFundamentals();
 }
 
 // =========================================================
@@ -2506,6 +2729,7 @@ async function initApp() {
       if (!state.ventas)   state.ventas   = [];
       if (!state.retiros)  state.retiros  = [];  // migración segura: no pierde datos existentes
       if (!state.manualHist) state.manualHist = [];
+      if (!state.compras) state.compras = [];
     } else {
       loadState();
     }
@@ -2528,6 +2752,8 @@ async function initApp() {
   renderAll(); checkSnapshotBanner(); checkWeeklyBanner();
 
   // La historia va aparte: si falla, la app sigue andando igual que siempre.
+  cargarFundamentals().then(() => renderFundamentals()).catch(e => console.warn('fundamentals:', e));
+
   cargarHistoriaGuardada()
     .then(() => { renderRendimiento(); renderRotacion(); return sincronizarMEP(false); })
     .then(() => sincronizarHistoria(false))
