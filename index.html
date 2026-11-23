@@ -275,6 +275,16 @@
       <div class="table-header"><div class="table-title">Detalle completo de cartera</div></div>
       <div id="detalleTable"></div>
     </div>
+
+    <div id="custodioAviso" class="aviso"></div>
+    <div class="summary-grid" id="custodioCards"></div>
+    <div class="table-wrap">
+      <div class="table-header">
+        <div class="table-title">Dónde está cada posición</div>
+        <div style="font-size:11px;color:var(--muted)">Los títulos en garantía están, pero no se pueden vender</div>
+      </div>
+      <div id="custodioTable" style="overflow-x:auto"></div>
+    </div>
   </div>
 
   <!-- RENDIMIENTO POR PERÍODO -->
@@ -783,6 +793,7 @@ function showTab(name) {
   if (name === 'rendimiento') renderRendimiento();
   if (name === 'rotacion') renderRotacion();
   if (name === 'fundamentals') renderFundamentals();
+  if (name === 'cartera') renderCustodios();
   if (name === 'liquidez') { renderLiquidez(); renderAportes(); renderMovimientos(); renderManuales(); }
 }
 
@@ -962,6 +973,85 @@ function addPosition() {
   });
   saveState(); renderAll();
   ['f-ticket','f-ppc','f-cant','f-precio','f-precioUSD','f-fecha','f-tc'].forEach(id => document.getElementById(id).value = '');
+}
+
+// =========================================================
+// CUSTODIOS
+// =========================================================
+// La cartera vive repartida en cinco agentes y hasta que se cruzaron los
+// resumenes nadie sabia que 90 MELI no estaban contadas. El total sigue siendo
+// uno solo; esto dice donde esta cada parte y avisa cuando no cuadra.
+function valorPos(p) {
+  return p.tenenciaManual != null ? p.tenenciaManual : (p.precio || 0) * (p.cant || 0);
+}
+
+function renderCustodios() {
+  const cont = document.getElementById('custodioTable');
+  if (!cont) return;
+  const cards = document.getElementById('custodioCards');
+  const aviso = document.getElementById('custodioAviso');
+
+  const porCustodio = {};
+  const descuadres = [];
+  let total = 0;
+
+  for (const p of state.positions) {
+    const val = valorPos(p);
+    if (!val && !(p.cant > 0)) continue;
+    total += val;
+    const lista = p.custodios || [];
+    if (!lista.length) {
+      (porCustodio['Sin asignar'] = porCustodio['Sin asignar'] || []).push({ p, cant: p.cant, val, gtia: false });
+      continue;
+    }
+    // Las cuentas que se cargan en pesos no tienen "cantidad": el valor va entero.
+    const esManual = p.tenenciaManual != null;
+    const sumaCant = lista.reduce((a, c) => a + (c.cant || 0), 0);
+    if (!esManual && Math.abs(sumaCant - (p.cant || 0)) > 0.0001) {
+      descuadres.push({ ticket: p.ticket, enTracker: p.cant, enCustodios: sumaCant });
+    }
+    for (const c of lista) {
+      const parte = esManual ? val : (sumaCant ? val * (c.cant / sumaCant) : 0);
+      (porCustodio[c.nombre] = porCustodio[c.nombre] || [])
+        .push({ p, cant: c.cant, val: parte, gtia: !!c.garantia });
+    }
+  }
+
+  const nombres = Object.keys(porCustodio)
+    .sort((a, b) => porCustodio[b].reduce((s, x) => s + x.val, 0) - porCustodio[a].reduce((s, x) => s + x.val, 0));
+
+  if (cards) cards.innerHTML = nombres.map(n => {
+    const filas = porCustodio[n];
+    const v = filas.reduce((s, x) => s + x.val, 0);
+    const gtia = filas.filter(x => x.gtia).reduce((s, x) => s + x.val, 0);
+    return `<div class="card">
+      <div class="card-label">${n}</div>
+      <div class="card-value">${fmt(v)}</div>
+      <div class="card-sub">${total ? (v / total * 100).toFixed(1) : 0}% de la cartera${
+        gtia ? ` · <span style="color:var(--yellow)">${fmt(gtia)} en garantía</span>` : ''}</div>
+    </div>`;
+  }).join('');
+
+  if (aviso) aviso.innerHTML = descuadres.length
+    ? 'No cuadra contra los resúmenes: ' + descuadres.map(d =>
+        `<strong>${d.ticket}</strong> — el tracker dice ${d.enTracker} y los custodios suman ${d.enCustodios}`).join(' · ')
+    : '';
+
+  cont.innerHTML = nombres.length ? `
+    <table>
+      <thead><tr><th>Custodio</th><th>Ticker</th><th>Cant.</th><th>Valor</th><th>% cartera</th><th></th></tr></thead>
+      <tbody>${nombres.map(n => porCustodio[n]
+        .sort((a, b) => b.val - a.val)
+        .map((x, i) => `<tr>
+          <td>${i === 0 ? `<span class="ticker">${n}</span>` : ''}</td>
+          <td class="ticker">${x.p.ticket}</td>
+          <td class="neutral">${x.p.tenenciaManual != null ? '—' : x.cant}</td>
+          <td>${fmt(x.val)}</td>
+          <td class="neutral">${total ? (x.val / total * 100).toFixed(1) : 0}%</td>
+          <td>${x.gtia ? '<span class="tipo-badge" style="background:rgba(255,209,102,.15);color:var(--yellow);border:1px solid rgba(255,209,102,.3)">garantía</span>' : ''}</td>
+        </tr>`).join('')).join('')}</tbody>
+      <tfoot><tr><td>Total</td><td></td><td></td><td><strong>${fmt(total)}</strong></td><td>100%</td><td></td></tr></tfoot>
+    </table>` : '<div style="padding:20px;color:var(--muted)">Sin custodios cargados.</div>';
 }
 
 // =========================================================
@@ -2174,7 +2264,7 @@ function renderAll() {
   renderDashboard(); renderDetalle(); renderOps();
   renderSnapshotHistory(); renderWeeklyHistory();
   renderLiquidez(); renderAportes(); renderMovimientos(); renderPnlRealizado();
-  renderRendimiento(); renderRotacion(); renderManuales(); renderCompras(); renderFundamentals();
+  renderRendimiento(); renderRotacion(); renderManuales(); renderCompras(); renderFundamentals(); renderCustodios();
 }
 
 // =========================================================
