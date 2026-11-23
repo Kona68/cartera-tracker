@@ -16,17 +16,40 @@ const SIMBOLO = { YPFD: 'YPF' };
 // Un ETF no presenta balance.
 const ETFS = new Set(['SPY', 'QQQ', 'EWZ', 'URA', 'XLE', 'DIA', 'IWM', 'EEM', 'ARKK']);
 
-let cacheCik = null, cacheCikAt = 0;
+// CIK verificado uno por uno contra data.sec.gov/submissions. Va escrito y no
+// leído del índice oficial porque www.sec.gov devuelve 403 a los clientes que no
+// ponen un mail de contacto en el User-Agent, y no corresponde poner el del dueño.
+const CIK = {
+  NVDA:'0001045810', MU:'0000723125', META:'0001326801', GOOGL:'0001652044',
+  TSLA:'0001318605', MELI:'0001099590', NU:'0001691493', YPF:'0000904851',
+  SPCX:'0001181412',
+  KO:'0000021344', WMT:'0000104169', PG:'0000080424', JNJ:'0000200406',
+  PEP:'0000077476', MCD:'0000063908', COST:'0000909832', CL:'0000021665',
+  MO:'0000764180', ABBV:'0001551152', VZ:'0000732712', PM:'0001413329',
+  MRK:'0000310158', UNH:'0000731766',
+};
 
-async function mapaCik() {
-  if (cacheCik && Date.now() - cacheCikAt < 864e5) return cacheCik;
-  const res = await fetch('https://www.sec.gov/files/company_tickers.json', { headers: UA });
-  if (!res.ok) throw new Error('no se pudo leer el índice de CIK: ' + res.status);
+const resueltos = {};
+
+// Para un ticker que no está en el mapa se usa el buscador de texto completo,
+// que sí responde: sus resultados traen "NOMBRE (TICKER) (CIK 00000...)".
+async function resolverCik(simbolo) {
+  if (CIK[simbolo]) return CIK[simbolo];
+  if (resueltos[simbolo]) return resueltos[simbolo];
+  const url = `https://efts.sec.gov/LATEST/search-index?q=%22${encodeURIComponent(simbolo)}%22&forms=10-K,20-F`;
+  const res = await fetch(url, { headers: UA });
+  if (!res.ok) return null;
   const d = await res.json();
-  const m = {};
-  for (const v of Object.values(d)) m[v.ticker] = String(v.cik_str).padStart(10, '0');
-  cacheCik = m; cacheCikAt = Date.now();
-  return m;
+  for (const h of (d?.hits?.hits || [])) {
+    for (const nombre of (h._source?.display_names || [])) {
+      const m = nombre.match(/\(([^()]*)\)\s*\(CIK (\d{10})\)/);
+      if (m && m[1].split(',').map(x => x.trim().toUpperCase()).includes(simbolo)) {
+        resueltos[simbolo] = m[2];
+        return m[2];
+      }
+    }
+  }
+  return null;
 }
 
 // Último cierre anual de un concepto. Se recorren las dos taxonomías porque los
@@ -53,9 +76,9 @@ const div = (a, b) => (a !== null && a !== undefined && b) ? a / b : null;
 export async function traerSec(ticker) {
   const simbolo = SIMBOLO[ticker] || ticker;
   let cik;
-  try { cik = (await mapaCik())[simbolo]; }
+  try { cik = await resolverCik(simbolo); }
   catch (e) { return { error: String(e.message || e) }; }
-  if (!cik) return { error: 'no presenta ante la SEC (o cotiza con otro símbolo)' };
+  if (!cik) return { error: 'no se encontró su CIK: puede no presentar ante la SEC' };
 
   const res = await fetch(`https://data.sec.gov/api/xbrl/companyfacts/CIK${cik}.json`, { headers: UA });
   if (!res.ok) return { error: `EDGAR contestó ${res.status}` };
