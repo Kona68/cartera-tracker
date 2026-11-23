@@ -1,11 +1,10 @@
 // Refresco semanal de fundamentals, disparado por el cron de vercel.json.
 //
-// Va una vez por semana y no todos los días por dos razones: estos números
-// cambian una vez por trimestre, y el plan gratuito de la fuente permite 25
-// llamadas por día. Pedirlos a diario gastaría la cuota sin agregar un dato.
+// Va una vez por semana y no todos los días porque estos números cambian una
+// vez por trimestre: pedirlos a diario no agregaría un dato.
 //
-// Variables de entorno: ALPHAVANTAGE_KEY, SUPABASE_SERVICE_KEY, CRON_SECRET (opcional).
-import { traer, ETFS } from './_fundamentals.js';
+// Variables de entorno: SUPABASE_SERVICE_KEY, CRON_SECRET (opcional).
+import { traerSec, ETFS } from './_sec.js';
 
 const SUPABASE_URL = 'https://ahkdtgjwiphksdacuddq.supabase.co';
 
@@ -27,7 +26,6 @@ export default async function handler(req, res) {
   if (secreto && req.headers.authorization !== `Bearer ${secreto}`) {
     return res.status(401).json({ error: 'no autorizado' });
   }
-  if (!process.env.ALPHAVANTAGE_KEY) return res.status(500).json({ error: 'falta ALPHAVANTAGE_KEY' });
   if (!process.env.SUPABASE_SERVICE_KEY) return res.status(500).json({ error: 'falta SUPABASE_SERVICE_KEY' });
 
   // Lo que hay en cartera y lo que está en seguimiento: las dos listas importan,
@@ -46,13 +44,11 @@ export default async function handler(req, res) {
   if (!lista.length) return res.status(200).json({ ok: true, pedidos: 0 });
 
   const datos = [], saltados = {};
-  let limite = false;
   for (const t of lista) {
-    if (limite) { saltados[t] = 'no se pidió: límite diario alcanzado'; continue; }
     try {
-      const r = await traer(t, process.env.ALPHAVANTAGE_KEY);
+      const r = await traerSec(t);
       if (r.datos) datos.push(r.datos);
-      else { saltados[t] = r.error; if (r.limite) limite = true; }
+      else saltados[t] = r.error;
     } catch (e) { saltados[t] = String(e); }
   }
 
@@ -67,6 +63,6 @@ export default async function handler(req, res) {
 
   return res.status(200).json({
     ok: true, pedidos: lista.length, guardados: datos.length,
-    limite_alcanzado: limite, saltados,
+    saltados,
   });
 }

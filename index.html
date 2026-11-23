@@ -348,11 +348,14 @@
     <div class="form-section" style="padding:20px">
       <div style="font-size:11.5px;color:var(--muted);line-height:1.8">
         <strong style="color:var(--text)">Cómo leer esto.</strong>
-        <b>ROE</b> y <b>ROA</b> dicen cuánto gana la empresa sobre el capital que usa: es la vara de Terry Smith, y mira la calidad del negocio, no el precio.
-        <b>Margen operativo</b> es cuánto le queda de cada peso que vende antes de impuestos e intereses.
-        <b>P/E</b>, <b>P/B</b> y <b>EV/EBITDA</b> son precio, no calidad: una empresa buenísima puede ser una mala inversión si se paga de más.
-        <b>Crecimiento</b> es contra el mismo trimestre del año anterior.
-        Los ETF (SPY, QQQ) no aparecen: no tienen balance propio.
+        <b>ROCE</b> es resultado operativo sobre el capital que de verdad emplea el negocio: es la vara de Terry Smith y la que mejor separa un buen negocio de uno mediocre.
+        <b>ROE</b> y <b>ROA</b> miran lo mismo contra patrimonio y contra activos; un ROE alto con poco patrimonio puede ser deuda, no calidad, y por eso al lado va <b>Deuda/Patrimonio</b>.
+        <b>Conversión a caja</b> es caja operativa sobre resultado neto: abajo de 1 sostenido quiere decir que la ganancia contable no se está haciendo plata.
+        <b>Crecimiento</b> compara el último ejercicio contra el anterior.
+        <br><br>
+        Todo sale de los balances presentados ante la SEC, así que la <b>fecha de cierre</b> importa: no es el precio de hoy, es el último ejercicio informado.
+        Acá no hay ningún múltiplo de precio (P/E y compañía): esto mide si la empresa es buena, no si está cara. Las dos preguntas son distintas y conviene no mezclarlas.
+        Los ETF (SPY, QQQ) no aparecen porque no presentan balance.
       </div>
     </div>
   </div>
@@ -1012,6 +1015,8 @@ function celdaFund(v, tipo) {
   }
   if (tipo === 'crec') return `<td class="${v >= 0 ? 'pos' : 'neg'}">${(v * 100).toFixed(1)}%</td>`;
   if (tipo === 'mult') return `<td class="neutral">${v.toFixed(1)}x</td>`;
+  // Conversión a caja: arriba de 1 es que la ganancia contable se hace plata.
+  if (tipo === 'veces') return `<td class="${v >= 1 ? 'pos' : (v < 0.6 ? 'neg' : 'neutral')}">${v.toFixed(2)}x</td>`;
   if (tipo === 'cap') return `<td class="neutral">${v >= 1e12 ? (v/1e12).toFixed(2)+' B' : (v/1e9).toFixed(1)+' MM'}</td>`;
   return `<td>${v}</td>`;
 }
@@ -1050,16 +1055,16 @@ function renderFundamentals(saltados) {
     const conRoe = filas.filter(f => f.roe !== null && pesos[f.ticker]);
     const roePond = conRoe.reduce((a, f) => a + f.roe * pesos[f.ticker], 0) /
                     (conRoe.reduce((a, f) => a + pesos[f.ticker], 0) || 1);
-    const conPe = filas.filter(f => f.pe !== null && f.pe > 0 && pesos[f.ticker]);
-    const pePond = conPe.reduce((a, f) => a + f.pe * pesos[f.ticker], 0) /
-                   (conPe.reduce((a, f) => a + pesos[f.ticker], 0) || 1);
+    const conRoce = filas.filter(f => f.roce !== null && pesos[f.ticker]);
+    const rocePond = conRoce.reduce((a, f) => a + f.roce * pesos[f.ticker], 0) /
+                     (conRoce.reduce((a, f) => a + pesos[f.ticker], 0) || 1);
     res.innerHTML = filas.length ? `
       <div class="card"><div class="card-label">ROE ponderado</div>
         <div class="card-value ${roePond >= 0.15 ? 'green' : ''}">${(roePond * 100).toFixed(1)}%</div>
         <div class="card-sub">${conRoe.length} de ${filas.length} empresas con dato</div></div>
-      <div class="card"><div class="card-label">P/E ponderado</div>
-        <div class="card-value">${pePond.toFixed(1)}x</div>
-        <div class="card-sub">sobre ${conPe.length} empresas con ganancias</div></div>
+      <div class="card"><div class="card-label">ROCE ponderado</div>
+        <div class="card-value ${rocePond >= 0.15 ? 'green' : ''}">${(rocePond * 100).toFixed(1)}%</div>
+        <div class="card-sub">sobre el capital que emplea el negocio</div></div>
       <div class="card"><div class="card-label">Empresas cargadas</div>
         <div class="card-value">${filas.length}</div>
         <div class="card-sub">${sinDato.length ? sinDato.length + ' sin dato' : 'todas las de la cartera'}</div></div>` : '';
@@ -1068,23 +1073,22 @@ function renderFundamentals(saltados) {
   cont.innerHTML = filas.length ? `
     <table>
       <thead><tr>
-        <th>Ticker</th><th>Empresa</th><th>Sector</th><th>Peso</th>
-        <th>ROE</th><th>ROA</th><th>Mg. oper.</th><th>Mg. neto</th>
-        <th>Crec. ingr.</th><th>Crec. gan.</th>
-        <th>P/E</th><th>Fwd P/E</th><th>P/B</th><th>EV/EBITDA</th><th>Cap.</th>
+        <th>Ticker</th><th>Empresa</th><th>Peso</th>
+        <th>ROCE</th><th>ROE</th><th>ROA</th><th>Mg. oper.</th><th>Mg. neto</th>
+        <th>Conv. caja</th><th>Deuda/Patr.</th>
+        <th>Crec. ingr.</th><th>Crec. result.</th><th>Ingresos</th><th>Cierre</th>
       </tr></thead>
       <tbody>${filas.map(f => `
         <tr>
           <td class="ticker">${f.ticker}</td>
-          <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis">${f.nombre || '—'}</td>
-          <td class="neutral" style="font-size:11px">${f.sector || '—'}</td>
+          <td style="max-width:190px;overflow:hidden;text-overflow:ellipsis">${f.nombre || '—'}</td>
           <td class="neutral">${pesos[f.ticker] ? (pesos[f.ticker] * 100).toFixed(1) + '%' : '—'}</td>
-          ${celdaFund(f.roe, 'pct')}${celdaFund(f.roa, 'pct')}
+          ${celdaFund(f.roce, 'pct')}${celdaFund(f.roe, 'pct')}${celdaFund(f.roa, 'pct')}
           ${celdaFund(f.margen_operativo, 'pct')}${celdaFund(f.margen_neto, 'pct')}
+          ${celdaFund(f.conversion_caja, 'veces')}${celdaFund(f.deuda_patrimonio, 'veces')}
           ${celdaFund(f.crec_ingresos, 'crec')}${celdaFund(f.crec_ganancias, 'crec')}
-          ${celdaFund(f.pe, 'mult')}${celdaFund(f.forward_pe, 'mult')}
-          ${celdaFund(f.price_to_book, 'mult')}${celdaFund(f.ev_ebitda, 'mult')}
-          ${celdaFund(f.market_cap, 'cap')}
+          ${celdaFund(f.ingresos_ttm, 'cap')}
+          <td class="neutral" style="font-size:11px">${f.cierre || '—'}</td>
         </tr>`).join('')}</tbody>
     </table>` :
     '<div style="padding:24px;color:var(--muted);font-size:12.5px;line-height:1.8">Todavía no hay fundamentals cargados.<br>Tocá <strong>Actualizar fundamentals</strong> para traerlos.</div>';
