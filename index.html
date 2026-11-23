@@ -986,9 +986,29 @@ async function cargarFundamentals() {
   for (const f of (filas || [])) fundamentals[f.ticker] = f;
 }
 
-async function actualizarFundamentals() {
-  const tickers = state.positions.filter(p => p.tipo !== 'Crypto' && p.cant > 0).map(p => p.ticket);
-  if (!tickers.length) { showToast('No hay posiciones'); return; }
+// Los ETF no presentan balance, asi que no se piden.
+const ETFS_SIN_BALANCE = new Set(['SPY', 'QQQ', 'EWZ', 'URA', 'XLE', 'DIA', 'IWM', 'EEM', 'ARKK']);
+
+function tickersParaFundamentals() {
+  const propios = state.positions.filter(p => p.tipo !== 'Crypto' && p.cant > 0).map(p => p.ticket);
+  const mirando = (watchlist || []).map(w => w.ticker);
+  return [...new Set([...propios, ...mirando])].filter(t => !ETFS_SIN_BALANCE.has(t));
+}
+
+// Se refresca solo cuando el dato quedo viejo o falta alguno. Asi no hace falta
+// ninguna clave de servidor: la app los pide con tu propia sesion.
+async function refrescarFundamentalsSiHaceFalta() {
+  const faltan = tickersParaFundamentals().filter(t => !fundamentals[t]);
+  const fechas = Object.values(fundamentals).map(f => f.actualizado_at).filter(Boolean).sort();
+  const ultimo = fechas.length ? new Date(fechas[fechas.length - 1]).getTime() : 0;
+  const vencido = Date.now() - ultimo > 7 * 864e5;
+  if (!faltan.length && !vencido) return;
+  await actualizarFundamentals(true);
+}
+
+async function actualizarFundamentals(silencioso) {
+  const tickers = tickersParaFundamentals();
+  if (!tickers.length) { if (!silencioso) showToast('No hay posiciones'); return; }
   showSyncStatus('Trayendo fundamentals...', 'var(--yellow)');
   try {
     const res = await fetch(`/api/fundamentals?tickers=${encodeURIComponent(tickers.join(','))}`);
@@ -1000,7 +1020,7 @@ async function actualizarFundamentals() {
       await cargarFundamentals();
     }
     renderFundamentals(data.saltados);
-    showSyncStatus(`✓ ${data.traidos} de ${data.pedidos}`, 'var(--accent)');
+    showSyncStatus(`✓ fundamentals: ${data.traidos} de ${data.pedidos}`, 'var(--accent)');
     setTimeout(() => showSyncStatus(''), 4000);
   } catch (e) {
     showSyncStatus('No se pudo traer fundamentals', 'var(--red)');
@@ -1034,9 +1054,8 @@ function renderFundamentals(saltados) {
   filas.sort((a, b) => (pesos[b.ticker] || 0) - (pesos[a.ticker] || 0));
 
   const aviso = document.getElementById('fundAviso');
-  const sinDato = state.positions
-    .filter(p => p.tipo !== 'Crypto' && p.cant > 0 && !fundamentals[p.ticket])
-    .map(p => p.ticket);
+  const sinDato = (typeof tickersParaFundamentals === 'function' ? tickersParaFundamentals() : [])
+    .filter(t => !fundamentals[t]);
   aviso.innerHTML = sinDato.length
     ? `Sin fundamentals todavía: <strong>${sinDato.join(', ')}</strong>. ` +
       (saltados && Object.keys(saltados).length
@@ -2756,7 +2775,10 @@ async function initApp() {
   renderAll(); checkSnapshotBanner(); checkWeeklyBanner();
 
   // La historia va aparte: si falla, la app sigue andando igual que siempre.
-  cargarFundamentals().then(() => renderFundamentals()).catch(e => console.warn('fundamentals:', e));
+  cargarFundamentals()
+    .then(() => { renderFundamentals(); return refrescarFundamentalsSiHaceFalta(); })
+    .then(() => renderFundamentals())
+    .catch(e => console.warn('fundamentals:', e));
 
   cargarHistoriaGuardada()
     .then(() => { renderRendimiento(); renderRotacion(); return sincronizarMEP(false); })
