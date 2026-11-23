@@ -52,26 +52,53 @@ async function resolverCik(simbolo) {
   return null;
 }
 
-// Último cierre anual de un concepto. Se recorren las dos taxonomías porque los
-// emisores extranjeros (NU, YPF) presentan en IFRS y no en US-GAAP.
-function anual(facts, conceptos) {
+// Todo tiene que salir del MISMO ejercicio. Tomar el último valor de cada
+// concepto por separado daba disparates: META con el resultado operativo de 2025
+// y los ingresos de 2017 mostraba 204% de margen, y MU 1177%. Primero se fija el
+// cierre con un concepto ancla y después se busca cada dato EN ese cierre.
+const FORMAS = ['10-K', '20-F', '40-F'];
+
+function hechosAnuales(facts, conceptos) {
+  const salida = [];
   for (const taxo of ['us-gaap', 'ifrs-full']) {
     const g = facts[taxo]; if (!g) continue;
     for (const c of conceptos) {
       const nodo = g[c]; if (!nodo) continue;
       const unidad = nodo.units['USD'] || Object.values(nodo.units)[0];
       if (!unidad) continue;
-      const cierres = unidad.filter(x => ['10-K', '20-F', '40-F'].includes(x.form) && x.fp === 'FY');
-      if (!cierres.length) continue;
-      const orden = cierres.sort((a, b) => a.end.localeCompare(b.end));
-      return { valor: orden[orden.length - 1].val, fecha: orden[orden.length - 1].end,
-               previo: orden.length > 1 ? orden[orden.length - 2].val : null, concepto: c };
+      for (const h of unidad) {
+        if (FORMAS.includes(h.form) && h.fp === 'FY') salida.push({ ...h, concepto: c });
+      }
     }
   }
-  return null;
+  return salida;
 }
 
-const div = (a, b) => (a !== null && a !== undefined && b) ? a / b : null;
+// Las fechas de cierre no caen siempre el mismo día (NVIDIA cierra un domingo
+// distinto cada año), así que se acepta una ventana de tres semanas.
+const cerca = (a, b) => Math.abs(new Date(a) - new Date(b)) <= 21 * 864e5;
+
+function enCierre(facts, conceptos, cierre) {
+  const h = hechosAnuales(facts, conceptos).filter(x => cerca(x.end, cierre));
+  if (!h.length) return null;
+  // Si el mismo dato viene en varias presentaciones, gana la más reciente.
+  h.sort((a, b) => (b.filed || '').localeCompare(a.filed || ''));
+  return h[0].val;
+}
+
+function cierreMasReciente(facts, conceptos) {
+  const h = hechosAnuales(facts, conceptos);
+  if (!h.length) return null;
+  h.sort((a, b) => a.end.localeCompare(b.end));
+  return h[h.length - 1].end;
+}
+
+function cierrePrevio(facts, conceptos, cierre) {
+  const h = hechosAnuales(facts, conceptos).filter(x => x.end < cierre && !cerca(x.end, cierre));
+  if (!h.length) return null;
+  h.sort((a, b) => a.end.localeCompare(b.end));
+  return h[h.length - 1].end;
+}
 
 export async function traerSec(ticker) {
   const simbolo = SIMBOLO[ticker] || ticker;
@@ -85,47 +112,60 @@ export async function traerSec(ticker) {
   const d = await res.json();
   const f = d.facts || {};
 
-  const ingresos = anual(f, ['Revenues', 'RevenueFromContractWithCustomerExcludingAssessedTax',
-                             'RevenueFromContractWithCustomerIncludingAssessedTax', 'Revenue']);
-  const neto     = anual(f, ['NetIncomeLoss', 'ProfitLoss']);
-  const operativo= anual(f, ['OperatingIncomeLoss', 'ProfitLossFromOperatingActivities']);
-  const activos  = anual(f, ['Assets']);
-  const patrim   = anual(f, ['StockholdersEquity', 'Equity',
-                             'StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest']);
-  const pasivos  = anual(f, ['Liabilities']);
-  const pasivoCte= anual(f, ['LiabilitiesCurrent', 'CurrentLiabilities']);
-  const caja     = anual(f, ['NetCashProvidedByUsedInOperatingActivities',
-                             'CashFlowsFromUsedInOperatingActivities']);
-  const deuda    = anual(f, ['LongTermDebtNoncurrent', 'LongTermDebt', 'NoncurrentPortionOfBorrowings']);
+  const INGRESOS = ['Revenues', 'RevenueFromContractWithCustomerExcludingAssessedTax',
+                    'RevenueFromContractWithCustomerIncludingAssessedTax', 'Revenue'];
+  const NETO = ['NetIncomeLoss', 'ProfitLoss'];
 
-  if (!ingresos && !neto) return { error: 'sin estados financieros usables en EDGAR' };
+  // El ejercicio lo fija el resultado neto, que lo presentan todos.
+  const cierre = cierreMasReciente(f, NETO);
+  if (!cierre) return { error: 'sin estados financieros anuales en EDGAR' };
+  const previo = cierrePrevio(f, NETO, cierre);
+
+  const ingresos  = enCierre(f, INGRESOS, cierre);
+  const neto      = enCierre(f, NETO, cierre);
+  const operativo = enCierre(f, ['OperatingIncomeLoss', 'ProfitLossFromOperatingActivities'], cierre);
+  const activos   = enCierre(f, ['Assets'], cierre);
+  const patrim    = enCierre(f, ['StockholdersEquity', 'Equity',
+                                 'StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest'], cierre);
+  const pasivos   = enCierre(f, ['Liabilities'], cierre);
+  const pasivoCte = enCierre(f, ['LiabilitiesCurrent', 'CurrentLiabilities'], cierre);
+  const caja      = enCierre(f, ['NetCashProvidedByUsedInOperatingActivities',
+                                 'CashFlowsFromUsedInOperatingActivities'], cierre);
+  const deuda     = enCierre(f, ['LongTermDebtNoncurrent', 'LongTermDebt', 'NoncurrentPortionOfBorrowings'], cierre);
+
+  const ingresosPrev = previo ? enCierre(f, INGRESOS, previo) : null;
+  const netoPrev     = previo ? enCierre(f, NETO, previo) : null;
+
+  if (ingresos === null && neto === null) return { error: 'sin estados financieros usables en EDGAR' };
 
   // ROCE: resultado operativo sobre el capital que de verdad emplea el negocio.
   // Es la vara de Terry Smith y la que no da ninguna fuente gratis ya calculada.
-  const capitalEmpleado = (activos && pasivoCte) ? activos.valor - pasivoCte.valor : null;
+  const capitalEmpleado = (activos !== null && pasivoCte !== null) ? activos - pasivoCte : null;
+
+  // Un cociente con el denominador negativo no mide nada: YPF con resultado neto
+  // negativo daba una "conversión a caja" de -6,21x, que no quiere decir nada.
+  const ratio = (a, b) => (a !== null && b !== null && b > 0) ? a / b : null;
 
   return {
     datos: {
       ticker, simbolo,
       nombre: d.entityName || null,
-      cierre: ingresos?.fecha || neto?.fecha || null,
-      ingresos_ttm: ingresos?.valor ?? null,
-      resultado_neto: neto?.valor ?? null,
-      resultado_operativo: operativo?.valor ?? null,
-      activos: activos?.valor ?? null,
-      patrimonio: patrim?.valor ?? null,
-      pasivos: pasivos?.valor ?? null,
-      deuda_largo: deuda?.valor ?? null,
-      caja_operativa: caja?.valor ?? null,
-      margen_neto: div(neto?.valor, ingresos?.valor),
-      margen_operativo: div(operativo?.valor, ingresos?.valor),
-      roe: div(neto?.valor, patrim?.valor),
-      roa: div(neto?.valor, activos?.valor),
-      roce: div(operativo?.valor, capitalEmpleado),
-      conversion_caja: div(caja?.valor, neto?.valor),
-      deuda_patrimonio: div(deuda?.valor, patrim?.valor),
-      crec_ingresos: (ingresos?.previo) ? ingresos.valor / ingresos.previo - 1 : null,
-      crec_ganancias: (neto?.previo && neto.previo > 0) ? neto.valor / neto.previo - 1 : null,
+      cierre,
+      ingresos_ttm: ingresos,
+      resultado_neto: neto,
+      resultado_operativo: operativo,
+      activos, patrimonio: patrim, pasivos,
+      deuda_largo: deuda,
+      caja_operativa: caja,
+      margen_neto: ratio(neto, ingresos),
+      margen_operativo: ratio(operativo, ingresos),
+      roe: ratio(neto, patrim),
+      roa: ratio(neto, activos),
+      roce: ratio(operativo, capitalEmpleado),
+      conversion_caja: ratio(caja, neto),
+      deuda_patrimonio: ratio(deuda, patrim),
+      crec_ingresos: (ingresos !== null && ingresosPrev) ? ingresos / ingresosPrev - 1 : null,
+      crec_ganancias: (neto !== null && netoPrev && netoPrev > 0) ? neto / netoPrev - 1 : null,
       fuente: 'sec',
       actualizado_at: new Date().toISOString(),
     },
