@@ -21,8 +21,15 @@ export async function traer(ticker, key) {
   if (!res.ok) return { error: `la fuente contestó ${res.status}` };
   const d = await res.json();
 
-  // Alpha Vantage no usa códigos de error: avisa con un texto y HTTP 200.
-  if (d.Note || d.Information) return { error: 'límite de llamadas alcanzado', limite: true };
+  // Alpha Vantage no usa códigos de error: avisa con un texto y HTTP 200, y usa
+  // el mismo campo para el límite diario y para "este endpoint ahora es pago".
+  // Se devuelve el mensaje textual: traducirlo a ciegas mandó a buscar el
+  // problema equivocado.
+  if (d.Note || d.Information) {
+    const msg = String(d.Note || d.Information);
+    const esLimite = /rate limit|call frequency|25 requests|per day/i.test(msg);
+    return { error: msg.slice(0, 300), limite: esLimite };
+  }
   if (d['Error Message']) return { error: 'símbolo no reconocido' };
   if (!d.Symbol) return { error: 'sin datos para ese símbolo' };
 
