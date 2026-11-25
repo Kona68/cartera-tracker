@@ -400,6 +400,29 @@
 
   <!-- GRÁFICOS -->
   <div id="tab-graficos" class="section">
+    <div class="periodos">
+      <button class="periodo-btn" data-periodo="1M" onclick="setPeriodo('1M')">1 mes</button>
+      <button class="periodo-btn active" data-periodo="3M" onclick="setPeriodo('3M')">3 meses</button>
+      <button class="periodo-btn" data-periodo="YTD" onclick="setPeriodo('YTD')">YTD</button>
+      <button class="periodo-btn" data-periodo="1A" onclick="setPeriodo('1A')">1 año</button>
+      <div class="moneda" style="margin-left:auto">
+        <button class="moneda-btn active" data-moneda="ARS" onclick="setMoneda('ARS')">Pesos</button>
+        <button class="moneda-btn" data-moneda="USD" onclick="setMoneda('USD')">Dólares</button>
+      </div>
+    </div>
+
+    <div class="chart-card" style="margin-bottom:20px">
+      <div class="chart-title" id="tituloCurva">Tu cartera contra el S&amp;P 500</div>
+      <canvas id="chartCurva" height="130"></canvas>
+      <p style="color:var(--muted);font-size:11.5px;line-height:1.7;margin-top:14px" id="notaCurva"></p>
+    </div>
+
+    <div class="chart-card" style="margin-bottom:20px">
+      <div class="chart-title">Bajo el agua</div>
+      <canvas id="chartBajoAgua" height="110"></canvas>
+      <p style="color:var(--muted);font-size:11.5px;line-height:1.7;margin-top:14px" id="notaBajoAgua"></p>
+    </div>
+
     <div class="charts-grid">
       <div class="chart-card">
         <div class="chart-title">Evolución Mensual de la Cartera (ARS)</div>
@@ -1061,6 +1084,147 @@ function addPosition() {
   });
   saveState(); renderAll();
   ['f-ticket','f-ppc','f-cant','f-precio','f-precioUSD','f-fecha','f-tc'].forEach(id => document.getElementById(id).value = '');
+}
+
+// =========================================================
+// CURVA DE CAPITAL Y BAJO EL AGUA
+// =========================================================
+// Las dos preguntas que ninguna torta de composicion contesta: si lo que elegi
+// le gana al indice que podria haber comprado, y cuanto hace que estoy abajo
+// del maximo. Se arman con las cantidades de HOY aplicadas a toda la serie, que
+// no es la rentabilidad historica real —para eso harian falta las compras y
+// ventas de cada dia— sino como se movio esta canasta en ese tramo.
+function serieCanasta(desde) {
+  const propias = state.positions.filter(p =>
+    p.cant > 0 && p.tenenciaManual == null && serieDe(p.ticket) && serieDe(p.ticket).length);
+  if (!propias.length) return null;
+
+  // Solo las fechas que tienen TODAS las posiciones: rellenar huecos inventaria
+  // movimientos que no existieron.
+  let comunes = null;
+  const mapas = {};
+  for (const p of propias) {
+    const serie = serieDe(p.ticket).filter(x => x.fecha >= desde);
+    mapas[p.ticket] = Object.fromEntries(serie.map(x => [x.fecha, x.precio]));
+    const fs = new Set(Object.keys(mapas[p.ticket]));
+    comunes = comunes ? new Set([...comunes].filter(f => fs.has(f))) : fs;
+  }
+  const fechas = [...(comunes || [])].sort();
+  if (fechas.length < 3) return null;
+
+  const valores = fechas.map(f => propias.reduce((a, p) => a + mapas[p.ticket][f] * p.cant, 0));
+  const fuera = state.positions
+    .filter(p => p.cant > 0 && p.tenenciaManual == null && !mapas[p.ticket])
+    .map(p => p.ticket);
+  return { fechas, valores, n: propias.length, fuera };
+}
+
+const ejeFecha = f => f.slice(8, 10) + '/' + f.slice(5, 7);
+
+function renderChartCurva() {
+  if (charts.curva) { try { charts.curva.destroy(); } catch (e) {} }
+  const ctx = document.getElementById('chartCurva');
+  if (!ctx) return;
+  const nota = document.getElementById('notaCurva');
+  const titulo = document.getElementById('tituloCurva');
+  if (titulo) titulo.textContent = `Tu cartera contra el S&P 500 · ${periodoActivo} · en ${monedaActiva}`;
+
+  const desde = inicioDePeriodo(periodoActivo);
+  const c = serieCanasta(desde);
+  const spy = serieDe('SPY');
+  if (!c) { if (nota) nota.textContent = 'Falta histórico. Traelo desde Rendimiento → Actualizar histórico.'; return; }
+
+  const base = c.valores[0];
+  const cartera = c.valores.map(v => v / base * 100);
+
+  // El indice se mide en las mismas fechas que la canasta, o la comparacion
+  // estaria mirando dias distintos.
+  let indice = null;
+  if (spy && spy.length) {
+    const m = Object.fromEntries(spy.map(x => [x.fecha, x.precio]));
+    const vals = c.fechas.map(f => m[f]);
+    if (vals.every(v => v)) indice = vals.map(v => v / vals[0] * 100);
+  }
+
+  charts.curva = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: c.fechas.map(ejeFecha),
+      datasets: [
+        { label: 'Tu cartera', data: cartera, borderColor: '#85BB65', backgroundColor: 'rgba(133,187,101,.12)',
+          borderWidth: 2, pointRadius: 0, tension: .15, fill: true },
+        ...(indice ? [{ label: 'S&P 500 (SPY)', data: indice, borderColor: '#5a6478',
+          borderWidth: 1.5, pointRadius: 0, tension: .15, borderDash: [5, 4], fill: false }] : []),
+      ],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: true, interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { labels: { color: '#e8edf5', font: { size: 11 }, usePointStyle: true } },
+        tooltip: { callbacks: { label: c2 => `${c2.dataset.label}: ${(c2.parsed.y - 100).toFixed(1)}%` } },
+      },
+      scales: {
+        x: { ticks: { color: '#5a6478', font: { size: 10 }, maxTicksLimit: 10 }, grid: { color: '#232830' } },
+        y: { ticks: { color: '#5a6478', font: { size: 10 }, callback: v => (v - 100).toFixed(0) + '%' },
+             grid: { color: '#232830' } },
+      },
+    },
+  });
+
+  const rc = cartera[cartera.length - 1] - 100;
+  const ri = indice ? indice[indice.length - 1] - 100 : null;
+  if (nota) nota.innerHTML =
+    `Desde ${c.fechas[0]}, con las cantidades de hoy sobre ${c.n} posiciones. ` +
+    `Tu cartera <strong class="${rc >= 0 ? 'pos' : 'neg'}">${rc >= 0 ? '+' : ''}${rc.toFixed(1)}%</strong>` +
+    (ri === null ? ' · sin serie de SPY para comparar.'
+      : ` contra <strong class="${ri >= 0 ? 'pos' : 'neg'}">${ri >= 0 ? '+' : ''}${ri.toFixed(1)}%</strong> del índice: ` +
+        `<strong>${(rc - ri) >= 0 ? '+' : ''}${(rc - ri).toFixed(1)} puntos</strong>.`) +
+    (c.fuera.length ? ` Quedan afuera por falta de serie: ${c.fuera.join(', ')}.` : '') +
+    ' No es tu rentabilidad histórica: es cómo se movió esta canasta en el tramo.';
+}
+
+function renderChartBajoAgua() {
+  if (charts.bajoAgua) { try { charts.bajoAgua.destroy(); } catch (e) {} }
+  const ctx = document.getElementById('chartBajoAgua');
+  if (!ctx) return;
+  const nota = document.getElementById('notaBajoAgua');
+
+  const c = serieCanasta(inicioDePeriodo(periodoActivo));
+  if (!c) { if (nota) nota.textContent = 'Falta histórico.'; return; }
+
+  let maximo = -Infinity;
+  const dd = c.valores.map(v => { maximo = Math.max(maximo, v); return (v / maximo - 1) * 100; });
+
+  charts.bajoAgua = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: c.fechas.map(ejeFecha),
+      datasets: [{ label: 'Bajo el máximo', data: dd, borderColor: '#ff4d6d',
+        backgroundColor: 'rgba(255,77,109,.14)', borderWidth: 1.5, pointRadius: 0, tension: .15, fill: true }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: true, interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { display: false },
+        tooltip: { callbacks: { label: c2 => `${c2.parsed.y.toFixed(1)}% abajo del máximo` } } },
+      scales: {
+        x: { ticks: { color: '#5a6478', font: { size: 10 }, maxTicksLimit: 10 }, grid: { color: '#232830' } },
+        y: { max: 0, ticks: { color: '#5a6478', font: { size: 10 }, callback: v => v.toFixed(0) + '%' },
+             grid: { color: '#232830' } },
+      },
+    },
+  });
+
+  const peor = Math.min(...dd);
+  const iPeor = dd.indexOf(peor);
+  const hoy = dd[dd.length - 1];
+  // Cuantos dias seguidos lleva sin tocar un maximo nuevo.
+  let seco = 0;
+  for (let i = dd.length - 1; i >= 0 && dd[i] < -0.0001; i--) seco++;
+  if (nota) nota.innerHTML =
+    `Hoy estás <strong class="${hoy < -0.05 ? 'neg' : ''}">${hoy.toFixed(1)}%</strong> abajo de tu máximo del tramo. ` +
+    `La peor caída fue <strong class="neg">${peor.toFixed(1)}%</strong>, el ${c.fechas[iPeor]}. ` +
+    (seco ? `Llevás <strong>${seco} ruedas</strong> sin hacer un máximo nuevo.` : 'Hoy estás en el máximo del tramo.') +
+    ' Esto no mide cuánto ganaste: mide cuánto duele y cuánto dura.';
 }
 
 // =========================================================
@@ -1997,6 +2161,7 @@ let charts = {};
 const COLORS = ['#85BB65','#0077ff','#ffd166','#ff4d6d','#a78bfa','#fb923c','#34d399','#60a5fa','#f472b6','#e879f9'];
 
 function renderCharts() {
+  renderChartCurva(); renderChartBajoAgua();
   Object.keys(charts).forEach(k => { try { if (charts[k]) { charts[k].destroy(); charts[k] = null; } } catch(e) {} });
   renderChartMensual(); renderChartTorta(); renderChartActivos();
   renderChartPnl(); renderChartVar(); renderChartSector();
@@ -2677,12 +2842,18 @@ function setMoneda(m) {
   monedaActiva = m;
   document.querySelectorAll('.moneda-btn').forEach(b => b.classList.toggle('active', b.dataset.moneda === m));
   renderRendimiento(); renderRotacion();
+  if (document.getElementById('tab-graficos').classList.contains('active')) {
+    renderChartCurva(); renderChartBajoAgua();
+  }
 }
 
 function setPeriodo(p) {
   periodoActivo = p;
   document.querySelectorAll('.periodo-btn').forEach(b => b.classList.toggle('active', b.dataset.periodo === p));
   renderRendimiento();
+  if (document.getElementById('tab-graficos').classList.contains('active')) {
+    renderChartCurva(); renderChartBajoAgua();
+  }
 }
 
 function celdaRend(r) {
