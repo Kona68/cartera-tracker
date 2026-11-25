@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="104" fill="#0a0c0f"/>
+  <!-- la aguja apuntando al norte -->
+  <path d="M256 104 L312 304 L256 268 L200 304 Z" fill="#85BB65"/>
+  <circle cx="256" cy="372" r="18" fill="#85BB65" opacity=".55"/>
+</svg>
