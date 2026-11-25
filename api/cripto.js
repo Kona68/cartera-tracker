@@ -53,17 +53,24 @@ export default async function handler(req, res) {
   }));
 
   // El precio en dólares, para poder mirar la cripto sin el ruido del peso.
-  // Uno por uno: el pedido con varios símbolos a la vez quedaba mal armado y
-  // volvía vacío sin decir por qué.
+  // Binance bloquea los pedidos desde Vercel y volvia vacio sin decir por que.
+  // CoinGecko responde sin clave y alcanza: el precio en dolares es para mirar
+  // la cripto sin el ruido del peso, no para valuar.
   const usd = {};
-  await Promise.all(lista.map(async (m) => {
-    try {
-      const r = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${m}USDT`);
-      if (!r.ok) return;
-      const d = await r.json();
-      if (d && d.price) usd[m] = Number(d.price);
-    } catch (e) { /* el precio en pesos ya alcanza para valuar */ }
-  }));
+  const IDS = { BTC: 'bitcoin', ETH: 'ethereum', SOL: 'solana', USDT: 'tether', USDC: 'usd-coin' };
+  try {
+    const ids = lista.map(m => IDS[m]).filter(Boolean);
+    if (ids.length) {
+      const r = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${ids.join(',')}&vs_currencies=usd`);
+      if (r.ok) {
+        const d = await r.json();
+        for (const m of lista) {
+          const v = d[IDS[m]];
+          if (v && v.usd) usd[m] = v.usd;
+        }
+      }
+    }
+  } catch (e) { /* el precio en pesos ya alcanza para valuar */ }
 
   return res.status(200).json({ precios, usd, fallas });
 }
