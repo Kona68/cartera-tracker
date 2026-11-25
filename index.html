@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Cartera | Portfolio Tracker</title>
+<title>north</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.58.0/dist/umd/supabase.min.js"></script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -14,10 +14,10 @@
     --surface: #111318;
     --surface2: #181c22;
     --border: #232830;
-    --accent: #00e5a0;
+    --accent: #85BB65;
     --accent2: #0077ff;
     --red: #ff4d6d;
-    --green: #00e5a0;
+    --green: #85BB65;
     --yellow: #ffd166;
     --text: #e8edf5;
     --muted: #5a6478;
@@ -48,6 +48,16 @@
   #authGate button { width: 100%; background: var(--accent); border: none; color: var(--bg); font-family: var(--display); font-weight: 700; font-size: 13px; letter-spacing: .5px; padding: 12px; border-radius: 6px; cursor: pointer; transition: opacity .2s; }
   #authGate button:disabled { opacity: .5; cursor: default; }
   #authMsg { font-size: 11.5px; margin-top: 14px; line-height: 1.6; min-height: 16px; }
+  #metaBanner { display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+    margin: 0 32px 22px; padding: 16px 22px; background: linear-gradient(90deg, rgba(133,187,101,.10), rgba(133,187,101,.02));
+    border: 1px solid rgba(133,187,101,.25); border-radius: 10px; }
+  #metaBanner .frase { font-family: var(--display); font-size: 15px; font-weight: 700; color: var(--accent); letter-spacing: .3px; }
+  #metaBanner .detalle { font-size: 11.5px; color: var(--muted); }
+  #metaBanner .barra { flex: 1; min-width: 160px; height: 6px; background: var(--surface2);
+    border-radius: 3px; overflow: hidden; }
+  #metaBanner .relleno { height: 100%; background: var(--accent); border-radius: 3px; transition: width .6s ease; }
+  #metaBanner .pct { font-family: var(--display); font-size: 20px; font-weight: 800; color: var(--text); }
+  @media (max-width: 720px) { #metaBanner { margin: 0 18px 18px; } }
   .periodos { display: flex; gap: 6px; margin-bottom: 20px; flex-wrap: wrap; }
   .periodo-btn { background: var(--surface); border: 1px solid var(--border); color: var(--muted); font-family: var(--mono); font-size: 12px; padding: 8px 18px; border-radius: 6px; cursor: pointer; transition: all .2s; }
   .periodo-btn:hover { color: var(--text); border-color: var(--muted); }
@@ -168,7 +178,7 @@
 
 <div id="authGate">
   <div class="box">
-    <div class="logo">cartera<span>.io</span></div>
+    <div class="logo">north<span>°</span></div>
     <div class="sub">Cartera privada. Ponés tu mail y te llega un link para entrar.</div>
     <form onsubmit="enviarMagicLink(event)">
       <input type="email" id="authEmail" placeholder="tu@mail.com" autocomplete="email" required>
@@ -204,7 +214,7 @@
 </div>
 
 <header>
-  <div class="logo">cartera<span>.io</span></div>
+  <div class="logo">north<span>°</span></div>
   <div class="header-meta">
     <div id="syncStatus" style="font-size:11px;color:var(--muted)"></div>
     <button onclick="refreshPrecios()" style="background:transparent;border:1px solid var(--border);color:var(--muted);padding:6px 14px;border-radius:6px;font-family:var(--mono);font-size:11px;cursor:pointer;transition:all .2s" onmouseover="this.style.color='var(--accent)';this.style.borderColor='var(--accent)'" onmouseout="this.style.color='var(--muted)';this.style.borderColor='var(--border)'">↻ Actualizar precios</button>
@@ -217,6 +227,15 @@
 <div id="syncBanner">
   <div class="txt"></div>
   <button onclick="reintentarGuardado()">Reintentar</button>
+</div>
+
+<div id="metaBanner">
+  <div style="display:flex;flex-direction:column;gap:3px">
+    <span class="frase" id="metaFrase">Rumbo al millón</span>
+    <span class="detalle" id="metaDetalle"></span>
+  </div>
+  <div class="barra"><div class="relleno" id="metaRelleno" style="width:0%"></div></div>
+  <span class="pct" id="metaPct">—</span>
 </div>
 
 <div class="tabs">
@@ -800,6 +819,33 @@ function showTab(name) {
 // =========================================================
 // DASHBOARD
 // =========================================================
+// La meta: USD 1.000.000. No es una vara del mes, es el norte — por eso la
+// frase cambia por tramo y no por el movimiento del dia.
+const META_USD = 1000000;
+
+function fraseMeta(p) {
+  if (p < 0.01) return 'El primer tramo es el más lento';
+  if (p < 0.05) return 'Rumbo al millón';
+  if (p < 0.10) return 'Ya dejó de ser una idea';
+  if (p < 0.25) return 'Un décimo del camino';
+  if (p < 0.50) return 'Más cerca de lo que parece';
+  if (p < 0.75) return 'La mitad quedó atrás';
+  if (p < 1)    return 'Última vuelta';
+  return 'Llegaste. Poné una meta nueva';
+}
+
+function renderMeta() {
+  const el = document.getElementById('metaBanner');
+  if (!el) return;
+  const { totalUSD } = getTotals();
+  const p = totalUSD / META_USD;
+  document.getElementById('metaFrase').textContent = fraseMeta(p);
+  document.getElementById('metaDetalle').textContent =
+    `${fmtUSD(totalUSD)} de ${fmtUSD(META_USD)} · faltan ${fmtUSD(Math.max(0, META_USD - totalUSD))}`;
+  document.getElementById('metaRelleno').style.width = Math.min(100, Math.max(0, p * 100)) + '%';
+  document.getElementById('metaPct').textContent = (p * 100).toFixed(p < 10 ? 2 : 1) + '%';
+}
+
 function renderDashboard() {
   const { totalTenencia, totalInvertido, totalPnl, totalUSD, totalLiquidez, totalRetiros, rentPct, rentBruta, totalPnlRealizado, totalPnlRealizadoUSD } = getTotals();
   document.getElementById('totalDisplay').textContent = fmt(totalTenencia);
@@ -1837,7 +1883,7 @@ function renderAportes() {
 // CHARTS
 // =========================================================
 let charts = {};
-const COLORS = ['#00e5a0','#0077ff','#ffd166','#ff4d6d','#a78bfa','#fb923c','#34d399','#60a5fa','#f472b6','#e879f9'];
+const COLORS = ['#85BB65','#0077ff','#ffd166','#ff4d6d','#a78bfa','#fb923c','#34d399','#60a5fa','#f472b6','#e879f9'];
 
 function renderCharts() {
   Object.keys(charts).forEach(k => { try { if (charts[k]) { charts[k].destroy(); charts[k] = null; } } catch(e) {} });
@@ -1897,7 +1943,7 @@ function renderChartMensual() {
   const { totalTenencia } = getTotals();
   if (totalTenencia > 0) allData.push({ mes: 'Hoy', valor: totalTenencia, isToday: true });
   charts.mensual = new Chart(ctx, { type: 'line',
-    data: { labels: allData.map(d=>d.mes), datasets: [{ label: 'Tenencia ARS', data: allData.map(d=>d.valor), borderColor: '#00e5a0', backgroundColor: 'rgba(0,229,160,0.08)', borderWidth: 2, pointRadius: allData.map(d=>d.isToday?6:3), pointBackgroundColor: allData.map(d=>d.isToday?'#ffd166':'#00e5a0'), fill: true, tension: 0.4 }] },
+    data: { labels: allData.map(d=>d.mes), datasets: [{ label: 'Tenencia ARS', data: allData.map(d=>d.valor), borderColor: '#85BB65', backgroundColor: 'rgba(0,229,160,0.08)', borderWidth: 2, pointRadius: allData.map(d=>d.isToday?6:3), pointBackgroundColor: allData.map(d=>d.isToday?'#ffd166':'#85BB65'), fill: true, tension: 0.4 }] },
     options: { responsive: true, plugins: { legend: { display: false }, tooltip: { callbacks: { label: ctx => fmt(ctx.raw) } } },
       scales: { x: { grid: { color: '#232830' }, ticks: { color: '#5a6478', font: { size: 10 }, maxTicksLimit: 14 } }, y: { grid: { color: '#232830' }, ticks: { color: '#5a6478', font: { size: 10 }, callback: v => '$'+(v/1000000).toFixed(1)+'M' } } } } });
 }
@@ -1984,11 +2030,11 @@ function renderChartCrecimientoReal() {
         {
           label: 'Valor Cartera (ARS)',
           data: baseData.map(d => d.valor),
-          borderColor: '#00e5a0',
+          borderColor: '#85BB65',
           backgroundColor: 'rgba(0,229,160,0.06)',
           borderWidth: 2.5,
           pointRadius: 3,
-          pointBackgroundColor: '#00e5a0',
+          pointBackgroundColor: '#85BB65',
           fill: true,
           tension: 0.4,
           yAxisID: 'y',
@@ -2261,6 +2307,7 @@ function showToast(msg) {
 }
 
 function renderAll() {
+  renderMeta();
   renderDashboard(); renderDetalle(); renderOps();
   renderSnapshotHistory(); renderWeeklyHistory();
   renderLiquidez(); renderAportes(); renderMovimientos(); renderPnlRealizado();
@@ -2810,6 +2857,28 @@ function showSyncStatus(msg, color='var(--muted)') {
   const el = document.getElementById('syncStatus'); if (el) { el.textContent = msg; el.style.color = color; }
 }
 
+// La cripto se valua con la mediana de los exchanges argentinos y no con el
+// precio en dolares por el MEP: el cripto local tiene su propia brecha, que el
+// 24/11 eran cinco puntos.
+async function refreshCripto() {
+  const monedas = state.positions
+    .filter(p => p.tipo === 'Crypto' && p.cant > 0 && p.tenenciaManual == null)
+    .map(p => p.ticket);
+  if (!monedas.length) return 0;
+  const res = await fetch(`/api/cripto?monedas=${encodeURIComponent(monedas.join(','))}`);
+  if (!res.ok) return 0;
+  const data = await res.json();
+  let n = 0;
+  for (const p of state.positions) {
+    const info = (data.precios || {})[p.ticket];
+    if (!info || !info.mediana) continue;
+    p.precio = info.mediana;
+    if ((data.usd || {})[p.ticket]) p.precioUSD = data.usd[p.ticket];
+    n++;
+  }
+  return n;
+}
+
 async function refreshPrecios() {
   const tickers = state.positions.filter(p => p.tipo !== 'Crypto' && p.cant > 0).map(p => p.ticket).join(',');
   if (!tickers) return;
@@ -2820,6 +2889,7 @@ async function refreshPrecios() {
     const data = await res.json();
     let updated = 0;
     state.positions.forEach(p => { if (data.precios[p.ticket]) { p.precio = data.precios[p.ticket]; updated++; } });
+    try { updated += await refreshCripto(); } catch (e) { console.warn('cripto:', e); }
     if (data.mep && data.mep > 0) { state.tc = data.mep; const tcInput = document.getElementById('tcInput'); if (tcInput) tcInput.value = data.mep; }
     await saveState(); renderAll();
     showSyncStatus(`✓ ${updated} precios actualizados · TC MEP $${data.mep?.toLocaleString('es-AR')||'—'}`, 'var(--accent)');
