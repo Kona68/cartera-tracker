@@ -858,6 +858,23 @@ const META_USD = 1000000;
 // Cuanto se movio la cartera hoy. Se compara el precio vivo contra el ultimo
 // cierre ANTERIOR a hoy: si la serie ya trae el cierre de hoy, usarlo daria
 // cero y parecria que no paso nada.
+// La variacion del dia de UNA posicion. Devuelve null cuando no hay un cierre
+// anterior a hoy: es preferible la raya a un cero que parece "no se movio".
+function variacionDiariaDe(p) {
+  if (!(p.cant > 0) || p.tenenciaManual != null) return null;
+  const serie = historia[p.ticket];
+  if (!serie) return null;
+  const hoy = hoyISO();
+  for (let i = serie.length - 1; i >= 0; i--) {
+    if (serie[i].fecha < hoy) {
+      const cierre = serie[i].precio;
+      if (!cierre) return null;
+      return { pct: (p.precio || 0) / cierre - 1, ars: ((p.precio || 0) - cierre) * p.cant, cierre };
+    }
+  }
+  return null;
+}
+
 function variacionDiaria() {
   const hoy = hoyISO();
   let antes = 0, ahora = 0;
@@ -951,6 +968,12 @@ function renderPosTable() {
       <td class="neutral">${p.cant}</td>
       <td>${fmt(p.ppc)}</td>
       <td>${fmt(p.precio)}</td>
+      ${(() => {
+        const d = variacionDiariaDe(p);
+        return d === null
+          ? '<td class="neutral">—</td>'
+          : `<td class="${cls(d.pct)}" title="${fmt(d.ars)} · cierre anterior ${fmt(d.cierre)}">${fmtPct(d.pct)}</td>`;
+      })()}
       <td class="${cls(c.variacionPct)}">${fmtPct(c.variacionPct)}</td>
       <td class="${cls(c.variacionARS)}">${fmt(c.variacionARS)}</td>
       <td>${fmt(c.tenencia)}</td>
@@ -967,10 +990,10 @@ function renderPosTable() {
 
   document.getElementById('posTable').innerHTML = `
     <table>
-      <thead><tr><th>Ticker</th><th>Tipo</th><th>Cant.</th><th>PPC</th><th>Precio ARG</th><th>Var %</th><th>Var $</th><th>Tenencia ARS</th><th>Tenencia USD</th><th>P&L ARS</th><th>P&L USD</th><th>% Cartera</th></tr></thead>
+      <thead><tr><th>Ticker</th><th>Tipo</th><th>Cant.</th><th>PPC</th><th>Precio ARG</th><th title="Contra el cierre anterior">Hoy</th><th>Var %</th><th>Var $</th><th>Tenencia ARS</th><th>Tenencia USD</th><th>P&L ARS</th><th>P&L USD</th><th>% Cartera</th></tr></thead>
       <tbody>${rows}</tbody>
       <tfoot><tr style="border-top:2px solid var(--border);font-weight:600">
-        <td colspan="7" style="text-align:left;color:var(--muted);font-size:11px;letter-spacing:1px;text-transform:uppercase">TOTAL</td>
+        <td colspan="8" style="text-align:left;color:var(--muted);font-size:11px;letter-spacing:1px;text-transform:uppercase">TOTAL</td>
         <td style="font-family:var(--display);font-size:13px">${fmt(totalTenencia)}</td>
         <td style="font-family:var(--display);font-size:13px;color:var(--accent2)">${fmtUSD(totalTenenciaUSD)}</td>
         <td class="${cls(totalPnlARS)}" style="font-family:var(--display);font-size:13px">${fmt(totalPnlARS)}</td>
@@ -1120,6 +1143,96 @@ function serieCanasta(desde) {
 }
 
 const ejeFecha = f => f.slice(8, 10) + '/' + f.slice(5, 7);
+
+// La canasta en pesos, siempre, independiente del toggle de moneda: los
+// snapshots no pueden cambiar de unidad segun lo que haya tocado el usuario.
+function serieCanastaARS() {
+  const propias = state.positions.filter(p =>
+    p.cant > 0 && p.tenenciaManual == null && historia[p.ticket] && historia[p.ticket].length);
+  if (!propias.length) return null;
+  let comunes = null;
+  const mapas = {};
+  for (const p of propias) {
+    mapas[p.ticket] = Object.fromEntries(historia[p.ticket].map(x => [x.fecha, x.precio]));
+    const fs = new Set(Object.keys(mapas[p.ticket]));
+    comunes = comunes ? new Set([...comunes].filter(f => fs.has(f))) : fs;
+  }
+  const fechas = [...(comunes || [])].sort();
+  if (!fechas.length) return null;
+  return { fechas, valores: fechas.map(f => propias.reduce((a, p) => a + mapas[p.ticket][f] * p.cant, 0)) };
+}
+
+// Los cierres se CALCULAN de la serie de precios, no se capturan al apretar un
+// boton. Capturarlos traia dos problemas: habia que acordarse, y si se guardaba
+// sin refrescar precios quedaban semanas repetidas con el mismo numero —en
+// agosto habia tres—. Derivados de la serie, eso no puede pasar.
+function cerrarPeriodosAutomatico() {
+  const c = serieCanastaARS();
+  if (!c || c.fechas.length < 2) return { meses: 0, semanas: 0 };
+
+  const spy = Object.fromEntries((historia['SPY'] || []).map(x => [x.fecha, x.precio]));
+  const mep = Object.fromEntries((historia['MEP'] || []).map(x => [x.fecha, x.precio]));
+  const invertido = state.positions
+    .filter(p => p.cant > 0 && p.tenenciaManual == null)
+    .reduce((a, p) => a + p.ppc * p.cant, 0);
+
+  // La ultima rueda de cada mes y de cada semana que ya cerraron.
+  const ultimaDe = (clave) => {
+    const m = {};
+    c.fechas.forEach((f, i) => { m[clave(f)] = { fecha: f, valor: c.valores[i] }; });
+    return m;
+  };
+  const hoy = hoyISO();
+  const mesActual = hoy.slice(0, 7);
+  const semanaActual = getWeekKey(new Date(hoy + 'T12:00:00'));
+
+  const armar = (k, label, d) => {
+    const tc = mep[d.fecha] || state.tc;
+    return {
+      key: k, label, fecha: d.fecha,
+      tenencia: d.valor, tenenciaUSD: tc ? d.valor / tc : 0,
+      pnl: d.valor - invertido,
+      rentPct: invertido ? d.valor / invertido - 1 : 0,
+      tc, spy: spy[d.fecha] || null,
+      nPositions: state.positions.length,
+      origen: 'auto',
+      // Reconstruido = armado hacia atras con las cantidades de HOY, no con las
+      // que habia en esa fecha. Un cierre reciente si refleja la cartera real.
+      reconstruido: d.fecha < new Date(Date.now() - 12 * 864e5).toISOString().slice(0, 10),
+    };
+  };
+
+  let nm = 0, ns = 0;
+  const meses = loadSnapshots();
+  const porMes = ultimaDe(f => f.slice(0, 7));
+  for (const [k, d] of Object.entries(porMes)) {
+    if (k >= mesActual) continue;
+    // Nunca se pisa un cierre que ya existe: sólo se completan los que faltan.
+    // Lo guardado antes puede ser peor dato, pero es un hecho con su fecha y
+    // reemplazarlo en silencio seria perder informacion.
+    if (meses.some(x => x.key === k)) continue;
+    const label = `${MESES[parseInt(k.slice(5, 7), 10) - 1]} ${k.slice(0, 4)}`;
+    meses.push(armar(k, label, d));
+    nm++;
+  }
+
+  const semanas = loadWeeklySnapshots();
+  const porSemana = ultimaDe(f => getWeekKey(new Date(f + 'T12:00:00')));
+  for (const [k, d] of Object.entries(porSemana)) {
+    if (k >= semanaActual) continue;
+    if (semanas.some(x => x.key === k)) continue;
+    semanas.push(armar(k, getWeekLabel(new Date(d.fecha + 'T12:00:00')), d));
+    ns++;
+  }
+
+  if (!nm && !ns) return { meses: 0, semanas: 0 };
+  meses.sort((a, b) => a.key.localeCompare(b.key));
+  semanas.sort((a, b) => a.key.localeCompare(b.key));
+  localStorage.setItem('portfolio_snapshots', JSON.stringify(meses));
+  localStorage.setItem('portfolio_weekly', JSON.stringify(semanas));
+  saveSnapshotsCloud();
+  return { meses: nm, semanas: ns };
+}
 
 function renderChartCurva() {
   if (charts.curva) { try { charts.curva.destroy(); } catch (e) {} }
@@ -2474,6 +2587,10 @@ function renderSnapshotHistory() {
     const prev = snapshots[i-1];
     const varMoM = prev ? (s.tenencia - prev.tenencia) / prev.tenencia : null;
     const varUSD = prev ? s.tenenciaUSD - prev.tenenciaUSD : null;
+    // El mes de la cartera contra el mes del indice. Los dos en pesos y en las
+    // mismas fechas, que es la unica forma de que la diferencia signifique algo.
+    const varSpy = (prev && prev.spy && s.spy) ? s.spy / prev.spy - 1 : null;
+    const vs = (varMoM !== null && varSpy !== null) ? varMoM - varSpy : null;
     return `<tr>
       <td style="text-align:left"><strong>${s.label}</strong></td>
       <td style="text-align:left;color:var(--muted);font-size:11px">${s.fecha}</td>
@@ -2482,12 +2599,14 @@ function renderSnapshotHistory() {
       <td class="${s.rentPct>=0?'pos':'neg'}">${fmtPct(s.rentPct)}</td>
       <td class="${varMoM===null?'neutral':varMoM>=0?'pos':'neg'}">${varMoM===null?'—':fmtPct(varMoM)}</td>
       <td class="${varUSD===null?'neutral':varUSD>=0?'pos':'neg'}">${varUSD===null?'—':(varUSD>=0?'+':'')+fmtUSD(varUSD)}</td>
-      <td style="color:var(--muted);font-size:11px">${s.tc?'$'+s.tc.toLocaleString('es-AR'):'—'}</td>
+      <td class="${varSpy===null?'neutral':varSpy>=0?'pos':'neg'}">${varSpy===null?'—':fmtPct(varSpy)}</td>
+      <td class="${vs===null?'neutral':vs>=0?'pos':'neg'}">${vs===null?'—':(vs>=0?'+':'')+(vs*100).toFixed(1)+' pts'}</td>
+      <td style="color:var(--muted);font-size:11px">${s.tc?'$'+s.tc.toLocaleString('es-AR'):'—'}${s.reconstruido?' <span title="Reconstruido con las cantidades de hoy, no con las de esa fecha" style="color:var(--yellow)">·r</span>':''}</td>
       <td><button class="btn-secondary" onclick="deleteSnapshot('${s.key}')">✕</button></td>
     </tr>`;
   }).reverse().join('');
   el.innerHTML = `<table>
-    <thead><tr><th style="text-align:left">Mes</th><th style="text-align:left">Fecha</th><th>Tenencia ARS</th><th>Tenencia USD</th><th>P&L ARS</th><th>Rent.</th><th>Var. MoM</th><th>Var. USD</th><th>TC MEP</th><th></th></tr></thead>
+    <thead><tr><th style="text-align:left">Mes</th><th style="text-align:left">Fecha</th><th>Tenencia ARS</th><th>Tenencia USD</th><th>P&L ARS</th><th>Rent.</th><th>Var. MoM</th><th>Var. USD</th><th title="El S&P 500 en el mismo mes">S&P</th><th title="Cuánto le sacaste o te sacó el índice">vs S&P</th><th>TC MEP</th><th></th></tr></thead>
     <tbody>${rows}</tbody>
   </table>`;
 }
@@ -3214,7 +3333,9 @@ async function initApp() {
   if (apMes) apMes.value = defaultMonth;
   const retFecha = document.getElementById('ret-fecha');
   if (retFecha) retFecha.value = now.toISOString().split('T')[0];
-  renderAll(); checkSnapshotBanner(); checkWeeklyBanner();
+  renderAll();
+  // Los banners que pedian guardar la semana y el mes ya no van: los cierres se
+  // calculan solos mas abajo. El boton manual sigue para un snapshot al vuelo.
 
   // La historia va aparte: si falla, la app sigue andando igual que siempre.
   cargarFundamentals()
@@ -3224,6 +3345,15 @@ async function initApp() {
 
   cargarHistoriaGuardada()
     .then(() => { renderRendimiento(); renderRotacion(); return sincronizarMEP(false); })
+    .then(() => sincronizarHistoria(false))
+    .then(() => {
+      const n = cerrarPeriodosAutomatico();
+      if (n.meses || n.semanas) {
+        showSyncStatus(`✓ cerrados ${n.meses} meses y ${n.semanas} semanas`, 'var(--accent)');
+        setTimeout(() => showSyncStatus(''), 5000);
+      }
+      renderSnapshotHistory(); renderWeeklyHistory();
+    })
     .then(() => sincronizarHistoria(false))
     .then(() => { renderRendimiento(); renderRotacion(); })
     .catch(e => console.warn('histórico:', e));
