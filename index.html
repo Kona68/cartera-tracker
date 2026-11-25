@@ -1150,16 +1150,31 @@ function serieCanastaARS() {
   const propias = state.positions.filter(p =>
     p.cant > 0 && p.tenenciaManual == null && historia[p.ticket] && historia[p.ticket].length);
   if (!propias.length) return null;
-  let comunes = null;
+
   const mapas = {};
+  const todas = new Set();
   for (const p of propias) {
     mapas[p.ticket] = Object.fromEntries(historia[p.ticket].map(x => [x.fecha, x.precio]));
-    const fs = new Set(Object.keys(mapas[p.ticket]));
-    comunes = comunes ? new Set([...comunes].filter(f => fs.has(f))) : fs;
+    Object.keys(mapas[p.ticket]).forEach(f => todas.add(f));
   }
-  const fechas = [...(comunes || [])].sort();
+  const fechas = [...todas].sort();
   if (!fechas.length) return null;
-  return { fechas, valores: fechas.map(f => propias.reduce((a, p) => a + mapas[p.ticket][f] * p.cant, 0)) };
+
+  // A diferencia del grafico, acá NO se exige que todas las posiciones tengan
+  // precio: en cada fecha entran las que ya cotizaban. SPCX salio a bolsa el
+  // 3/8/2026, asi que exigirlas a todas dejaba sin reconstruir todo lo anterior
+  // —junio y julio, que es justo donde estan los cierres repetidos—. Y ademas
+  // es mas fiel: en junio SPCX no existia, no corresponde contarla.
+  const valores = [], incluidas = [], faltantes = [];
+  for (const f of fechas) {
+    let v = 0; const dentro = [], fuera = [];
+    for (const p of propias) {
+      const px = mapas[p.ticket][f];
+      if (px) { v += px * p.cant; dentro.push(p.ticket); } else fuera.push(p.ticket);
+    }
+    valores.push(v); incluidas.push(dentro.length); faltantes.push(fuera);
+  }
+  return { fechas, valores, incluidas, faltantes, total: propias.length };
 }
 
 // Los cierres se CALCULAN de la serie de precios, no se capturan al apretar un
@@ -1172,14 +1187,16 @@ function cerrarPeriodosAutomatico() {
 
   const spy = Object.fromEntries((historia['SPY'] || []).map(x => [x.fecha, x.precio]));
   const mep = Object.fromEntries((historia['MEP'] || []).map(x => [x.fecha, x.precio]));
-  const invertido = state.positions
-    .filter(p => p.cant > 0 && p.tenenciaManual == null)
+  const costoDe = (faltan) => state.positions
+    .filter(p => p.cant > 0 && p.tenenciaManual == null && !(faltan || []).includes(p.ticket))
     .reduce((a, p) => a + p.ppc * p.cant, 0);
 
   // La ultima rueda de cada mes y de cada semana que ya cerraron.
   const ultimaDe = (clave) => {
     const m = {};
-    c.fechas.forEach((f, i) => { m[clave(f)] = { fecha: f, valor: c.valores[i] }; });
+    c.fechas.forEach((f, i) => {
+      m[clave(f)] = { fecha: f, valor: c.valores[i], incluidas: c.incluidas[i], faltan: c.faltantes[i] };
+    });
     return m;
   };
   const hoy = hoyISO();
@@ -1188,13 +1205,16 @@ function cerrarPeriodosAutomatico() {
 
   const armar = (k, label, d) => {
     const tc = mep[d.fecha] || state.tc;
+    const invertido = costoDe(d.faltan);
     return {
       key: k, label, fecha: d.fecha,
       tenencia: d.valor, tenenciaUSD: tc ? d.valor / tc : 0,
       pnl: d.valor - invertido,
       rentPct: invertido ? d.valor / invertido - 1 : 0,
       tc, spy: spy[d.fecha] || null,
-      nPositions: state.positions.length,
+      nPositions: d.incluidas,
+      // Que posiciones NO entraron por no cotizar todavia en esa fecha.
+      faltan: d.faltan && d.faltan.length ? d.faltan : undefined,
       origen: 'auto',
       // Reconstruido = armado hacia atras con las cantidades de HOY, no con las
       // que habia en esa fecha. Un cierre reciente si refleja la cartera real.
