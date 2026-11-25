@@ -331,6 +331,16 @@
     </div>
     <div id="rendAviso" class="aviso"></div>
     <div class="summary-grid" id="rendResumen"></div>
+    <div class="table-wrap" style="margin-bottom:20px">
+      <div class="table-header">
+        <div class="table-title">Rentabilidad por tipo de activo</div>
+        <div style="font-size:11px;color:var(--muted)">Contra el precio promedio de compra, en pesos</div>
+      </div>
+      <div id="tipoTable" style="overflow-x:auto"></div>
+      <div style="padding:0 18px 18px;height:190px"><canvas id="chartTipo"></canvas></div>
+      <p style="color:var(--muted);font-size:11.5px;line-height:1.7;margin:0 18px 18px" id="notaTipo"></p>
+    </div>
+
     <div class="table-wrap">
       <div class="table-header">
         <div class="table-title">Rendimiento por posición</div>
@@ -421,6 +431,31 @@
       <div class="chart-title">Bajo el agua</div>
       <canvas id="chartBajoAgua" height="110"></canvas>
       <p style="color:var(--muted);font-size:11.5px;line-height:1.7;margin-top:14px" id="notaBajoAgua"></p>
+    </div>
+
+    <div class="chart-card" style="margin-bottom:20px">
+      <div class="chart-title">Quien construyo la ganancia
+        <span style="color:var(--muted);font-size:10px;font-weight:400;margin-left:8px">aporte de cada posicion al resultado total</span>
+      </div>
+      <canvas id="chartCascada" height="130"></canvas>
+      <p style="color:var(--muted);font-size:11.5px;line-height:1.7;margin-top:14px" id="notaCascada"></p>
+    </div>
+
+    <div class="charts-grid">
+      <div class="chart-card">
+        <div class="chart-title">Riesgo contra retorno
+          <span style="color:var(--muted);font-size:10px;font-weight:400;margin-left:8px">volatilidad anual vs rendimiento del periodo</span>
+        </div>
+        <canvas id="chartRiesgo" height="230"></canvas>
+        <p style="color:var(--muted);font-size:11.5px;line-height:1.7;margin-top:14px" id="notaRiesgo"></p>
+      </div>
+      <div class="chart-card">
+        <div class="chart-title">Calidad contra castigo
+          <span style="color:var(--muted);font-size:10px;font-weight:400;margin-left:8px">ROCE vs distancia al maximo de 52 semanas</span>
+        </div>
+        <canvas id="chartCalidad" height="230"></canvas>
+        <p style="color:var(--muted);font-size:11.5px;line-height:1.7;margin-top:14px" id="notaCalidad"></p>
+      </div>
     </div>
 
     <div class="charts-grid">
@@ -1541,7 +1576,7 @@ function renderFundamentals(saltados) {
   const fuente = document.getElementById('fundFuente');
   const fechas = filas.map(f => f.actualizado_at).filter(Boolean).sort();
   if (fuente) fuente.textContent = fechas.length
-    ? `Alpha Vantage · último dato traído el ${new Date(fechas[fechas.length - 1]).toLocaleDateString('es-AR')}`
+    ? `Balances de la SEC (EDGAR) · último dato traído el ${new Date(fechas[fechas.length - 1]).toLocaleDateString('es-AR')}`
     : '';
 
   const res = document.getElementById('fundResumen');
@@ -2294,11 +2329,368 @@ let charts = {};
 const COLORS = ['#85BB65','#0077ff','#ffd166','#ff4d6d','#a78bfa','#fb923c','#34d399','#60a5fa','#f472b6','#e879f9'];
 
 function renderCharts() {
-  renderChartCurva(); renderChartBajoAgua();
+  // El destroy va ANTES de dibujar. Estaba despues de renderChartCurva y
+  // renderChartBajoAgua, asi que las destruia recien creadas: las dos de arriba
+  // quedaban en blanco al abrir la pestaña y solo aparecian al tocar un periodo.
   Object.keys(charts).forEach(k => { try { if (charts[k]) { charts[k].destroy(); charts[k] = null; } } catch(e) {} });
+  renderChartCurva(); renderChartBajoAgua();
+  renderChartCascada(); renderChartRiesgo(); renderChartCalidad();
   renderChartMensual(); renderChartTorta(); renderChartActivos();
   renderChartPnl(); renderChartVar(); renderChartSector();
   renderChartSectorBar(); renderChartCrecimientoReal(); renderChartRentMensual(); renderChartRentSemanal();
+}
+
+// =========================================================
+// QUIEN CONSTRUYO LA GANANCIA (CASCADA)
+// =========================================================
+// El P&L total es un numero solo y no dice nada de donde salio. Esto lo abre:
+// cada barra arranca donde termino la anterior, asi que se ve que posicion
+// empuja para arriba, cual se lo come, y cuanto queda al final. Las ventas ya
+// cerradas van como un solo renglon, porque esa plata ya no depende del precio.
+const etiquetasBurbuja = {
+  id: 'etiquetasBurbuja',
+  afterDatasetsDraw(chart) {
+    const g = chart.ctx;
+    g.save();
+    g.font = "700 10px 'Syne', sans-serif";
+    g.fillStyle = '#e8edf5';
+    g.textAlign = 'center';
+    g.textBaseline = 'bottom';
+    for (const meta of chart.getSortedVisibleDatasetMetas()) {
+      const datos = chart.data.datasets[meta.index].data;
+      meta.data.forEach((punto, i) => {
+        const d = datos[i];
+        if (!d || !d.etq) return;
+        g.fillText(d.etq, punto.x, punto.y - (d.r || 6) - 3);
+      });
+    }
+    g.restore();
+  }
+};
+
+function renderChartCascada() {
+  const ctx = document.getElementById('chartCascada');
+  if (!ctx) return;
+  const nota = document.getElementById('notaCascada');
+
+  const partes = state.positions
+    .filter(p => p.tenenciaManual == null && p.ppc > 0 && p.cant > 0)
+    .map(p => ({ etq: p.ticket, v: calcPos(p).pnl, cerrado: false }))
+    .filter(x => Math.abs(x.v) >= 1)
+    .sort((a, b) => b.v - a.v);
+
+  const realizado = (state.ventas || []).reduce((a, v) => a + (v.pnlARS || 0), 0);
+  if (Math.abs(realizado) >= 1) partes.push({ etq: 'Ventas', v: realizado, cerrado: true });
+
+  if (!partes.length) {
+    if (nota) nota.textContent = 'Todavia no hay posiciones con precio promedio de compra cargado.';
+    return;
+  }
+
+  const total = partes.reduce((a, x) => a + x.v, 0);
+  const labels = [], barras = [], colores = [];
+  let acum = 0;
+  for (const x of partes) {
+    barras.push([acum, acum + x.v]);
+    acum += x.v;
+    labels.push(x.etq);
+    colores.push(x.cerrado
+      ? (x.v >= 0 ? 'rgba(133,187,101,0.95)' : 'rgba(255,77,109,0.95)')
+      : (x.v >= 0 ? 'rgba(133,187,101,0.55)' : 'rgba(255,77,109,0.55)'));
+  }
+  labels.push('Total'); barras.push([0, total]);
+  colores.push(total >= 0 ? '#85BB65' : '#ff4d6d');
+
+  charts.cascada = new Chart(ctx.getContext('2d'), {
+    type: 'bar',
+    data: { labels, datasets: [{ data: barras, backgroundColor: colores, borderRadius: 3, borderSkipped: false }] },
+    options: { responsive: true, plugins: { legend: { display: false },
+      tooltip: { callbacks: { label: c => {
+        const i = c.dataIndex;
+        if (i === partes.length) return ' Total: ' + fmt(total);
+        const x = partes[i];
+        return ` ${x.v >= 0 ? 'suma' : 'resta'} ${fmt(Math.abs(x.v))}${x.cerrado ? ' (ya cobrado)' : ''}`;
+      } } } },
+      scales: {
+        x: { grid: { display: false }, ticks: { color: '#e8edf5', font: { size: 10, family: "'Syne', sans-serif", weight: '700' } } },
+        y: { grid: { color: '#232830' }, ticks: { color: '#5a6478', font: { size: 10 }, callback: v => '$' + (v / 1e6).toFixed(1) + 'M' } }
+      } }
+  });
+
+  const sinBase = state.positions.filter(p => p.tenenciaManual != null && calcPos(p).tenencia > 0);
+  const montoSinBase = sinBase.reduce((a, p) => a + calcPos(p).tenencia, 0);
+  const mejor = partes.filter(x => !x.cerrado)[0];
+  const peor = [...partes].filter(x => !x.cerrado).pop();
+  if (nota) nota.innerHTML =
+    `Las barras claras son ganancia o perdida <strong>en papel</strong>: se mueven con el precio. ` +
+    `La oscura, <strong>Ventas</strong>, es lo realizado: ${fmt(realizado)} que ya esta cobrado y no vuelve a cambiar. ` +
+    (mejor && peor && mejor.etq !== peor.etq
+      ? `Hoy el que mas empuja es <strong>${mejor.etq}</strong> (${fmt(mejor.v)}) y el que mas pesa en contra es <strong>${peor.etq}</strong> (${fmt(peor.v)}). `
+      : '') +
+    (sinBase.length
+      ? `Quedan afuera ${sinBase.map(p => p.ticket).join(', ')}: son ${fmt(montoSinBase)} cargados por total en pesos, sin precio de compra, asi que su aporte no se puede medir.`
+      : '');
+}
+
+// =========================================================
+// RIESGO CONTRA RETORNO
+// =========================================================
+// La pregunta que contesta: cuanto te paga cada posicion por el sobresalto que
+// te hace pasar. Arriba a la izquierda es lo bueno (rinde y no se mueve), abajo
+// a la derecha es lo caro (no rinde y te sacude). El tamaño de la burbuja es
+// cuanto pesa en la cartera, porque un mal lugar con mucho peso duele mas.
+function renderChartRiesgo() {
+  const ctx = document.getElementById('chartRiesgo');
+  if (!ctx) return;
+  const nota = document.getElementById('notaRiesgo');
+  if (!Object.keys(historia).length) {
+    if (nota) nota.textContent = 'Falta el historico. Traelo desde Rendimiento → Actualizar historico.';
+    return;
+  }
+
+  const { totalTenencia } = getTotals();
+  const puntos = [], sinDato = [];
+  for (const p of state.positions) {
+    if (!(p.cant > 0) || p.tenenciaManual != null) continue;
+    const vol = volatilidadAnual(p.ticket);
+    const rend = rendPeriodo(p.ticket, periodoActivo);
+    if (vol === null || rend === null) { sinDato.push(p.ticket); continue; }
+    const peso = totalTenencia ? calcPos(p).tenencia / totalTenencia : 0;
+    puntos.push({ x: vol * 100, y: rend * 100, r: Math.max(5, Math.min(26, Math.sqrt(peso) * 70)),
+                  etq: p.ticket, peso });
+  }
+  if (!puntos.length) {
+    if (nota) nota.textContent = 'Todavia no hay series suficientes para medir volatilidad (hacen falta 30 dias).';
+    return;
+  }
+
+  // La cartera entera como un punto mas: su volatilidad NO es el promedio de las
+  // individuales, es la de la canasta, que se mueve menos porque las posiciones
+  // no caen todas el mismo dia. Esa diferencia es exactamente la diversificacion.
+  const canasta = serieCanasta(inicioDePeriodo('1A'));
+  let volCartera = null;
+  if (canasta && canasta.valores.length > 30) {
+    const r = [];
+    for (let i = 1; i < canasta.valores.length; i++) r.push(Math.log(canasta.valores[i] / canasta.valores[i - 1]));
+    const m = r.reduce((a, b) => a + b, 0) / r.length;
+    volCartera = Math.sqrt(r.reduce((a, b) => a + (b - m) ** 2, 0) / (r.length - 1)) * Math.sqrt(252);
+  }
+  const rendCart = rendCanasta(periodoActivo).rend;
+  const datasets = [{ label: 'Posiciones', data: puntos, backgroundColor: 'rgba(0,119,255,0.5)',
+                      borderColor: '#4da6ff', borderWidth: 1 }];
+  if (volCartera !== null && rendCart !== null) {
+    datasets.push({ label: 'Tu cartera', data: [{ x: volCartera * 100, y: rendCart * 100, r: 11, etq: 'CARTERA' }],
+                    backgroundColor: 'rgba(133,187,101,0.85)', borderColor: '#85BB65', borderWidth: 2 });
+  }
+
+  charts.riesgo = new Chart(ctx.getContext('2d'), {
+    type: 'bubble',
+    plugins: [etiquetasBurbuja],
+    data: { datasets },
+    options: { responsive: true,
+      plugins: { legend: { display: false },
+        tooltip: { callbacks: { label: c => {
+          const d = c.raw;
+          return ` ${d.etq}: rinde ${d.y.toFixed(1)}% con volatilidad ${d.x.toFixed(1)}%` +
+                 (d.peso ? ` · ${(d.peso * 100).toFixed(1)}% de la cartera` : '');
+        } } } },
+      scales: {
+        x: { title: { display: true, text: 'Volatilidad anual %', color: '#5a6478', font: { size: 10 } },
+             grid: { color: '#232830' }, ticks: { color: '#5a6478', font: { size: 10 }, callback: v => v + '%' } },
+        y: { title: { display: true, text: 'Rendimiento ' + periodoActivo + ' %', color: '#5a6478', font: { size: 10 } },
+             grid: { color: '#232830' }, ticks: { color: '#5a6478', font: { size: 10 }, callback: v => v + '%' } }
+      } }
+  });
+
+  const peores = puntos.filter(d => d.y < 0).sort((a, b) => b.x - a.x).slice(0, 3);
+  if (nota) nota.innerHTML =
+    `Volatilidad del ultimo año, rendimiento de <strong>${periodoActivo}</strong>, en ${monedaActiva}. ` +
+    `Arriba a la izquierda es lo que paga sin sacudirte; abajo a la derecha, lo que te sacude sin pagarte. ` +
+    (volCartera !== null
+      ? `<strong>Tu cartera entera</strong> (punto verde) vuela a ${(volCartera * 100).toFixed(1)}% de volatilidad, por debajo de casi todas sus partes: eso es la diversificacion, no una mejora de las posiciones. `
+      : '') +
+    (peores.length ? `Hoy en el cuadrante malo: <strong>${peores.map(d => d.etq).join(', ')}</strong>. ` : '') +
+    (sinDato.length ? `Sin serie suficiente: ${sinDato.join(', ')}.` : '');
+}
+
+// =========================================================
+// CALIDAD CONTRA CASTIGO
+// =========================================================
+// Lo que se querria mirar es calidad contra PRECIO (ROCE contra PER), que es la
+// pregunta de Terry Smith: un gran negocio a un precio malo es una inversion
+// mala. Pero el PER no lo tenemos: los fundamentals salen de los balances de la
+// SEC, que traen el negocio y no la cotizacion, y el precio que tenemos es el
+// del CEDEAR en pesos, que no se puede dividir por la ganancia por accion sin
+// saber el ratio de conversion. Asi que el eje vertical es el castigo reciente:
+// cuanto cayo desde su maximo de 52 semanas. NO es una valuacion, y hay que
+// decirlo: un papel 30% abajo de su maximo puede seguir carisimo.
+function renderChartCalidad() {
+  const ctx = document.getElementById('chartCalidad');
+  if (!ctx) return;
+  const nota = document.getElementById('notaCalidad');
+
+  const { totalTenencia } = getTotals();
+  const puntos = [], sinRoce = [];
+  for (const p of state.positions) {
+    if (!(p.cant > 0) || p.tenenciaManual != null) continue;
+    const f = fundamentals[p.ticket];
+    const max = maximo52s(p.ticket);
+    const hoy = ultimoPrecio(p.ticket);
+    if (!f || f.roce === null || f.roce === undefined || !max || !hoy) { sinRoce.push(p.ticket); continue; }
+    const peso = totalTenencia ? calcPos(p).tenencia / totalTenencia : 0;
+    puntos.push({ x: f.roce * 100, y: (hoy / max - 1) * 100,
+                  r: Math.max(5, Math.min(26, Math.sqrt(peso) * 70)), etq: p.ticket, peso });
+  }
+  if (!puntos.length) {
+    if (nota) nota.textContent = 'Hacen falta fundamentals y serie de precios. Traelos desde la pestaña Fundamentals.';
+    return;
+  }
+
+  charts.calidad = new Chart(ctx.getContext('2d'), {
+    type: 'bubble',
+    plugins: [etiquetasBurbuja],
+    data: { datasets: [{ data: puntos,
+      backgroundColor: puntos.map(d => d.x >= 15 ? 'rgba(133,187,101,0.55)' : 'rgba(255,209,102,0.45)'),
+      borderColor: puntos.map(d => d.x >= 15 ? '#85BB65' : '#ffd166'), borderWidth: 1 }] },
+    options: { responsive: true,
+      plugins: { legend: { display: false },
+        tooltip: { callbacks: { label: c => {
+          const d = c.raw;
+          return ` ${d.etq}: ROCE ${d.x.toFixed(1)}% · ${d.y.toFixed(1)}% del maximo de 52 semanas` +
+                 (d.peso ? ` · ${(d.peso * 100).toFixed(1)}% de la cartera` : '');
+        } } } },
+      scales: {
+        x: { title: { display: true, text: 'ROCE % (retorno sobre el capital que emplea)', color: '#5a6478', font: { size: 10 } },
+             grid: { color: '#232830' }, ticks: { color: '#5a6478', font: { size: 10 }, callback: v => v + '%' } },
+        y: { title: { display: true, text: 'Distancia al maximo de 52 semanas %', color: '#5a6478', font: { size: 10 } },
+             grid: { color: '#232830' }, ticks: { color: '#5a6478', font: { size: 10 }, callback: v => v + '%' } }
+      } }
+  });
+
+  const buenasCastigadas = puntos.filter(d => d.x >= 15 && d.y <= -15).sort((a, b) => a.y - b.y);
+  if (nota) nota.innerHTML =
+    `<strong>Esto no mide si algo esta barato.</strong> Mide calidad del negocio (ROCE, de los balances de la SEC) contra ` +
+    `cuanto se castigo el precio ultimamente. El PER no lo tenemos: la SEC trae el balance, no la cotizacion, y el precio ` +
+    `que manejamos es el del CEDEAR en pesos. Un papel 30% abajo de su maximo puede seguir carisimo. ` +
+    `En verde, ROCE arriba del 15%, que es el piso que suele pedirse para llamar bueno a un negocio. ` +
+    (buenasCastigadas.length
+      ? `Negocios buenos y castigados hoy: <strong>${buenasCastigadas.map(d => d.etq + ' (' + d.y.toFixed(0) + '%)').join(', ')}</strong>. `
+      : '') +
+    (sinRoce.length ? `Sin ROCE o sin serie: ${sinRoce.join(', ')} — los ETF no presentan balance.` : '');
+}
+
+// =========================================================
+// RENTABILIDAD POR TIPO DE ACTIVO
+// =========================================================
+// La trampa aca es el cero inventado. Las billeteras cripto se cargan por total
+// en pesos, sin precio promedio de compra, asi que calcPos les da P&L cero: no
+// es que no ganaron nada, es que no sabemos. Si se suman al promedio del tipo,
+// le diluyen el porcentaje y el numero deja de medir. Por eso el costo, el P&L y
+// el porcentaje se calculan SOLO con lo que tiene base de costo, y lo que no la
+// tiene se informa en su propia columna.
+let chartTipoRef = null;
+
+function datosPorTipo() {
+  const porTipo = {};
+  const dame = t => porTipo[t] || (porTipo[t] = {
+    tipo: t, n: 0, nSinBase: 0, tenencia: 0, costo: 0, pnl: 0, realizado: 0, sinBase: 0 });
+
+  for (const p of state.positions) {
+    const c = calcPos(p);
+    if (!(c.tenencia > 0) && !(p.cant > 0)) continue;
+    const g = dame(p.tipo || 'Otro');
+    g.tenencia += c.tenencia;
+    if (p.tenenciaManual != null || !(p.ppc > 0)) { g.sinBase += c.tenencia; g.nSinBase++; }
+    else { g.n++; g.costo += c.costoTotal; g.pnl += c.pnl; }
+  }
+
+  // El realizado se atribuye por el tipo que tiene hoy ese ticker. Si se vendio
+  // todo y la posicion ya no existe, el tipo lo trae la venta.
+  const tipoDe = {};
+  state.positions.forEach(p => { tipoDe[p.ticket] = p.tipo || 'Otro'; });
+  for (const v of (state.ventas || [])) dame(tipoDe[v.ticket] || v.tipo || 'Otro').realizado += (v.pnlARS || 0);
+
+  const total = Object.values(porTipo).reduce((a, g) => a + g.tenencia, 0);
+  return Object.values(porTipo).map(g => Object.assign({}, g, {
+    peso: total ? g.tenencia / total : 0,
+    rent: g.costo > 0 ? g.pnl / g.costo : null
+  })).sort((a, b) => b.tenencia - a.tenencia);
+}
+
+function claseTipo(t) {
+  return 'tipo-' + (t || '').toLowerCase().replace('é', 'e').replace('ó', 'o').replace('í', 'i');
+}
+
+function renderRentPorTipo() {
+  const cont = document.getElementById('tipoTable');
+  if (!cont) return;
+  const filas = datosPorTipo();
+  if (chartTipoRef) { try { chartTipoRef.destroy(); } catch (e) {} chartTipoRef = null; }
+  if (!filas.length) { cont.innerHTML = '<div style="padding:20px;color:var(--muted)">Sin posiciones cargadas.</div>'; return; }
+
+  const t = filas.reduce((a, g) => ({
+    tenencia: a.tenencia + g.tenencia, costo: a.costo + g.costo,
+    pnl: a.pnl + g.pnl, realizado: a.realizado + g.realizado, sinBase: a.sinBase + g.sinBase
+  }), { tenencia: 0, costo: 0, pnl: 0, realizado: 0, sinBase: 0 });
+
+  cont.innerHTML = `<table>
+    <thead><tr>
+      <th style="text-align:left">Tipo</th><th>Posiciones</th><th>Tenencia</th><th>% cartera</th>
+      <th>Costo</th><th>P&L en papel</th><th>vs PPC</th><th>Realizado</th><th>Sin base de costo</th>
+    </tr></thead>
+    <tbody>${filas.map(g => `<tr>
+      <td style="text-align:left"><span class="tipo-badge ${claseTipo(g.tipo)}">${g.tipo}</span></td>
+      <td class="neutral">${g.n}${g.nSinBase ? ' <span style="opacity:.6">+' + g.nSinBase + ' sin base</span>' : ''}</td>
+      <td>${fmt(g.tenencia)}</td>
+      <td class="neutral">${(g.peso * 100).toFixed(1)}%</td>
+      <td>${g.costo > 0 ? fmt(g.costo) : '<span class="neutral">—</span>'}</td>
+      <td class="${g.costo > 0 ? cls(g.pnl) : 'neutral'}">${g.costo > 0 ? fmt(g.pnl) : '—'}</td>
+      <td class="${g.rent === null ? 'neutral' : cls(g.rent)}">${g.rent === null ? 'sin base de costo' : fmtPct(g.rent)}</td>
+      <td class="${g.realizado ? cls(g.realizado) : 'neutral'}">${g.realizado ? fmt(g.realizado) : '—'}</td>
+      <td class="neutral">${g.sinBase ? fmt(g.sinBase) : '—'}</td>
+    </tr>`).join('')}</tbody>
+    <tfoot><tr>
+      <td style="text-align:left;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:1px">Total</td>
+      <td></td>
+      <td style="font-family:var(--display);font-weight:700">${fmt(t.tenencia)}</td>
+      <td class="neutral">100,0%</td>
+      <td>${fmt(t.costo)}</td>
+      <td class="${cls(t.pnl)}" style="font-family:var(--display);font-weight:700">${fmt(t.pnl)}</td>
+      <td class="${t.costo > 0 ? cls(t.pnl / t.costo) : 'neutral'}" style="font-family:var(--display);font-weight:700">${t.costo > 0 ? fmtPct(t.pnl / t.costo) : '—'}</td>
+      <td class="${cls(t.realizado)}">${fmt(t.realizado)}</td>
+      <td class="neutral">${t.sinBase ? fmt(t.sinBase) : '—'}</td>
+    </tr></tfoot>
+  </table>`;
+
+  const medibles = filas.filter(g => g.rent !== null);
+  const ctx = document.getElementById('chartTipo');
+  if (ctx && medibles.length) {
+    const data = medibles.map(g => g.rent * 100);
+    chartTipoRef = new Chart(ctx.getContext('2d'), {
+      type: 'bar',
+      data: { labels: medibles.map(g => g.tipo), datasets: [{ data,
+        backgroundColor: data.map(v => v >= 0 ? 'rgba(133,187,101,0.7)' : 'rgba(255,77,109,0.7)'),
+        borderRadius: 5, maxBarThickness: 34 }] },
+      options: { indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+        plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => {
+          const g = medibles[c.dataIndex];
+          return ` ${c.raw.toFixed(2)}% · ${fmt(g.pnl)} sobre ${fmt(g.costo)} de costo`;
+        } } } },
+        scales: { x: { grid: { color: '#232830' }, ticks: { color: '#5a6478', font: { size: 10 }, callback: v => v.toFixed(0) + '%' } },
+                  y: { grid: { display: false }, ticks: { color: '#e8edf5', font: { size: 11, family: "'Syne', sans-serif", weight: '700' } } } } }
+    });
+  }
+
+  const sin = filas.filter(g => g.sinBase > 0);
+  const nota = document.getElementById('notaTipo');
+  if (nota) nota.innerHTML =
+    `El porcentaje es contra el <strong>precio promedio de compra</strong>, no contra un periodo: dice como viene la posicion ` +
+    `desde que la compraste, y no se mueve cuando cambias el selector de arriba. ` +
+    `El P&L en papel depende del precio de hoy; el realizado ya esta cobrado. ` +
+    (sin.length
+      ? `Ojo con ${sin.map(g => g.tipo).join(' y ')}: hay ${sin.map(g => fmt(g.sinBase)).join(' y ')} cargados por total en pesos, sin precio de compra. ` +
+        `Eso no cuenta como cero: cuenta como no medido, y por eso queda afuera del porcentaje en vez de diluirlo.`
+      : '');
 }
 
 function renderChartActivos() {
@@ -2894,7 +3286,32 @@ async function cargarHistoriaGuardada() {
   for (const f of (filas || [])) {
     (historia[f.ticker] = historia[f.ticker] || []).push({ fecha: f.fecha, precio: Number(f.precio) });
   }
+  puntosDeOtroMercado = [];
+  for (const t of Object.keys(historia)) {
+    const { limpia, sospechosos } = sacarPuntosDeOtroMercado(t, historia[t]);
+    historia[t] = limpia;
+    puntosDeOtroMercado.push(...sospechosos);
+  }
   historiaAlDia = Object.values(historia).flat().reduce((max, p) => p.fecha > max ? p.fecha : max, '');
+}
+
+// Un punto a menos de la decima parte de la mediana de su propia serie no es
+// una caida: es otra unidad. Un split de verdad nunca deja un solo dia afuera
+// de escala y vuelve al dia siguiente, y el detector de splits no lo agarra
+// porque su ratio mas grande es 20 y esto es 100 veces.
+let puntosDeOtroMercado = [];
+
+function sacarPuntosDeOtroMercado(ticker, serie) {
+  if (!serie || serie.length < 10) return { limpia: serie || [], sospechosos: [] };
+  const ord = serie.map(p => p.precio).sort((a, b) => a - b);
+  const mediana = ord[Math.floor(ord.length / 2)];
+  if (!(mediana > 0)) return { limpia: serie, sospechosos: [] };
+  const limpia = [], sospechosos = [];
+  for (const p of serie) {
+    if (p.precio < mediana / 10) sospechosos.push({ ticker, fecha: p.fecha, precio: p.precio });
+    else limpia.push(p);
+  }
+  return { limpia, sospechosos };
 }
 
 // El MEP se guarda en la misma tabla que los precios, con ticker MEP: no necesita
@@ -2983,6 +3400,9 @@ function setMoneda(m) {
   renderRendimiento(); renderRotacion();
   if (document.getElementById('tab-graficos').classList.contains('active')) {
     renderChartCurva(); renderChartBajoAgua();
+    if (charts.riesgo) { try { charts.riesgo.destroy(); } catch (e) {} charts.riesgo = null; }
+    if (charts.calidad) { try { charts.calidad.destroy(); } catch (e) {} charts.calidad = null; }
+    renderChartRiesgo(); renderChartCalidad();
   }
 }
 
@@ -2992,6 +3412,9 @@ function setPeriodo(p) {
   renderRendimiento();
   if (document.getElementById('tab-graficos').classList.contains('active')) {
     renderChartCurva(); renderChartBajoAgua();
+    if (charts.riesgo) { try { charts.riesgo.destroy(); } catch (e) {} charts.riesgo = null; }
+    if (charts.calidad) { try { charts.calidad.destroy(); } catch (e) {} charts.calidad = null; }
+    renderChartRiesgo(); renderChartCalidad();
   }
 }
 
@@ -3001,6 +3424,7 @@ function celdaRend(r) {
 }
 
 function renderRendimiento() {
+  renderRentPorTipo();
   const cont = document.getElementById('rendResumen');
   if (!cont) return;
 
@@ -3070,9 +3494,17 @@ function renderRendimiento() {
 
   const aviso = document.getElementById('rendAviso');
   const conSplit = [...new Set(splitsVistos.map(s => s.ticker))];
-  aviso.innerHTML = conSplit.length
-    ? `Series corregidas por split o cambio de ratio en: <strong>${conSplit.join(', ')}</strong>. Sin esa corrección los rendimientos largos salen completamente mal.`
-    : '';
+  const partes = [];
+  if (conSplit.length) partes.push(
+    `Series corregidas por split o cambio de ratio en: <strong>${conSplit.join(', ')}</strong>. Sin esa corrección los rendimientos largos salen completamente mal.`);
+  if (puntosDeOtroMercado.length) {
+    const porTicker = {};
+    puntosDeOtroMercado.forEach(x => { (porTicker[x.ticker] = porTicker[x.ticker] || []).push(x.fecha); });
+    partes.push('Se descartaron precios que están en dólares dentro de una serie en pesos: ' +
+      Object.entries(porTicker).map(([t, f]) => `<strong>${t}</strong> (${f.length} ${f.length === 1 ? 'día' : 'días'}: ${f.join(', ')})`).join(' · ') +
+      '. Vienen de cuando el histórico caía a nYSE porque bCBA no contestó. Quedan en la base: hay que borrarlos.');
+  }
+  aviso.innerHTML = partes.join(' ');
 }
 
 // =========================================================
