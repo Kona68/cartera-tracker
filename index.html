@@ -674,7 +674,7 @@
 
     <div class="table-wrap">
       <div class="table-header">
-        <div class="table-title">Compras registradas</div>
+        <div class="table-title">Historial de operaciones</div>
         <div style="font-size:11px;color:var(--muted)" id="comprasResumen"></div>
       </div>
       <div id="comprasTable" style="overflow-x:auto"></div>
@@ -832,6 +832,27 @@ function showTab(name) {
 // frase cambia por tramo y no por el movimiento del dia.
 const META_USD = 1000000;
 
+// Cuanto se movio la cartera hoy. Se compara el precio vivo contra el ultimo
+// cierre ANTERIOR a hoy: si la serie ya trae el cierre de hoy, usarlo daria
+// cero y parecria que no paso nada.
+function variacionDiaria() {
+  const hoy = hoyISO();
+  let antes = 0, ahora = 0;
+  const sinSerie = [];
+  for (const p of state.positions) {
+    if (!(p.cant > 0) || p.tenenciaManual != null) continue;
+    const serie = historia[p.ticket];
+    let cierre = null;
+    if (serie) for (let i = serie.length - 1; i >= 0; i--) {
+      if (serie[i].fecha < hoy) { cierre = serie[i].precio; break; }
+    }
+    if (!cierre) { sinSerie.push(p.ticket); continue; }
+    antes += cierre * p.cant;
+    ahora += (p.precio || 0) * p.cant;
+  }
+  return { antes, ahora, ars: ahora - antes, pct: antes ? ahora / antes - 1 : null, sinSerie };
+}
+
 function fraseMeta(p) {
   if (p < 0.01) return 'El primer tramo es el más lento';
   if (p < 0.05) return 'Rumbo al millón';
@@ -862,6 +883,17 @@ function renderDashboard() {
 
   const cards = [
     { label:'Tenencia Total', value: fmt(totalTenencia), sub: `USD ${fmtUSD(totalUSD)}` },
+    (() => {
+      const v = variacionDiaria();
+      return {
+        label: 'Variación de hoy',
+        value: v.pct === null ? 'sin datos' : fmtPct(v.pct),
+        cls: v.pct === null ? '' : cls(v.pct),
+        sub: v.pct === null
+          ? 'falta el histórico'
+          : `${fmt(v.ars)}${v.sinSerie.length ? ' · sin serie: ' + v.sinSerie.join(', ') : ''}`,
+      };
+    })(),
     { label:'Invertido', value: fmt(totalInvertido), sub: 'Posiciones activas' },
     { label:'Liquidez ARS', value: fmt(totalLiquidez), sub: `USD ${fmtUSD(totalLiquidez / state.tc)}` },
     { label:'P&L No Realizado', value: fmt(totalPnl), cls: cls(totalPnl), sub: fmtPct(rentBruta) + ' bruto' },
@@ -1019,10 +1051,11 @@ function addPosition() {
   // Cada compra deja su propia fila. Antes solo se promediaba el PPC y la operacion
   // se perdia: sin esto no se puede reconstruir que habia en cada momento, y la
   // rentabilidad del año termina siendo una aproximacion en vez de un numero.
+  if (existing) ajustarCustodios(existing, cant);
   state.compras = state.compras || [];
   state.compras.push({
     id: Date.now(), ticket, tipo, cant, precio: ppc,
-    fecha: fecha || new Date().toISOString().split('T')[0],
+    fecha: aISO(fecha),
     tc, total: ppc * cant, ppcAnterior,
     ppcNuevo: state.positions.find(p => p.ticket === ticket).ppc
   });
@@ -1474,37 +1507,85 @@ function borrarCompra(id) {
   showToast('Registro eliminado');
 }
 
+// Compras y ventas en una sola linea de tiempo: para seguir lo que se hizo,
+// separarlas en dos tablas obliga a cruzarlas de memoria.
 function renderCompras() {
   const cont = document.getElementById('comprasTable');
   if (!cont) return;
-  const compras = [...(state.compras || [])].sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
   const resumen = document.getElementById('comprasResumen');
 
-  if (!compras.length) {
+  const ops = [
+    ...(state.compras || []).map(c => ({
+      tipo: 'compra', fecha: aISO(c.fecha), ticket: c.ticket, cant: c.cant,
+      precio: c.precio, total: c.total, tc: c.tc, id: c.id,
+      detalle: c.ppcNuevo ? `PPC → ${fmt(c.ppcNuevo)}` : '', pnl: null, estimado: false,
+    })),
+    ...(state.ventas || []).map(v => ({
+      tipo: 'venta', fecha: aISO(v.fecha), ticket: v.ticket, cant: v.cant,
+      precio: v.precioVenta, total: v.producido || v.precioVenta * v.cant, tc: v.tc, id: v.id,
+      detalle: `costo ${fmt(v.ppc)}`, pnl: v.pnlARS, estimado: !!v.estimado, nota: v.nota,
+    })),
+  ].sort((a, b) => (b.fecha || '').localeCompare(a.fecha || '') || b.id - a.id);
+
+  if (!ops.length) {
     cont.innerHTML = '<div style="padding:20px;color:var(--muted);font-size:12px;line-height:1.8">' +
-      'Todavía no hay compras registradas. Desde ahora, cada una que cargues arriba queda acá con su fecha y su precio.<br>' +
-      'Las anteriores no se pueden recuperar: el sistema promediaba el PPC y no guardaba la operación.</div>';
+      'Sin operaciones registradas todavía.</div>';
     if (resumen) resumen.textContent = '';
     return;
   }
-  const total = compras.reduce((s, c) => s + (c.total || 0), 0);
-  if (resumen) resumen.textContent = `${compras.length} ${compras.length === 1 ? 'compra' : 'compras'} · ${fmt(total)} invertidos`;
+
+  const nc = ops.filter(o => o.tipo === 'compra').length;
+  const nv = ops.length - nc;
+  const invertido = ops.filter(o => o.tipo === 'compra').reduce((s, o) => s + (o.total || 0), 0);
+  const realizado = ops.filter(o => o.tipo === 'venta').reduce((s, o) => s + (o.pnl || 0), 0);
+  if (resumen) resumen.innerHTML =
+    `${nc} ${nc === 1 ? 'compra' : 'compras'} · ${nv} ${nv === 1 ? 'venta' : 'ventas'}` +
+    (invertido ? ` · ${fmt(invertido)} comprados` : '') +
+    ` · realizado <span class="${realizado >= 0 ? 'pos' : 'neg'}">${fmt(realizado)}</span>`;
 
   cont.innerHTML = `
     <table>
-      <thead><tr><th>Fecha</th><th>Ticker</th><th>Cant.</th><th>Precio</th><th>Total</th><th>TC</th><th>PPC quedó en</th><th></th></tr></thead>
-      <tbody>${compras.map(c => `
-        <tr>
-          <td class="neutral">${c.fecha || '—'}</td>
-          <td><span class="ticker">${c.ticket}</span></td>
-          <td>${c.cant}</td>
-          <td>${fmt(c.precio)}</td>
-          <td>${fmt(c.total)}</td>
-          <td class="neutral">${c.tc ? c.tc.toLocaleString('es-AR') : '—'}</td>
-          <td class="neutral">${c.ppcNuevo ? fmt(c.ppcNuevo) : '—'}${c.ppcAnterior ? ` <span style="font-size:10px">(venía de ${fmt(c.ppcAnterior)})</span>` : ''}</td>
-          <td><button class="btn-icono" onclick="borrarCompra(${c.id})">✕</button></td>
+      <thead><tr><th>Fecha</th><th>Qué</th><th>Ticker</th><th>Cant.</th><th>Precio</th><th>Monto</th><th>Resultado</th><th>Detalle</th><th></th></tr></thead>
+      <tbody>${ops.map(o => `
+        <tr${o.estimado ? ' title="Precio estimado: ' + (o.nota || '').replace(/"/g, "'") + '"' : ''}>
+          <td class="neutral">${o.fecha || '—'}</td>
+          <td><span class="tipo-badge ${o.tipo === 'compra' ? 'tipo-cedear' : 'tipo-accion'}">${o.tipo}</span></td>
+          <td><span class="ticker">${o.ticket}</span></td>
+          <td>${o.cant}</td>
+          <td>${fmt(o.precio)}${o.estimado ? ' <span style="color:var(--yellow);font-size:10px">est.</span>' : ''}</td>
+          <td>${fmt(o.total)}</td>
+          <td class="${o.pnl === null ? 'neutral' : (o.pnl >= 0 ? 'pos' : 'neg')}">${o.pnl === null ? '—' : fmt(o.pnl)}</td>
+          <td class="neutral" style="font-size:11px">${o.detalle}</td>
+          <td><button class="btn-icono" onclick="${o.tipo === 'compra' ? `borrarCompra(${o.id})` : `deleteVenta(${o.id})`}">✕</button></td>
         </tr>`).join('')}</tbody>
     </table>`;
+}
+
+// El input type=date da 2026-11-24 y el default daba 24/11/2026. Mezclados, el
+// historial se ordenaba mal y las comparaciones de fecha mentian.
+function hoyISO() { return new Date().toISOString().split('T')[0]; }
+
+function aISO(f) {
+  if (!f) return hoyISO();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(f)) return f;
+  const m = String(f).match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (m) return `${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}`;
+  return f;
+}
+
+// Al vender o comprar hay que tocar tambien el reparto por custodio, o la
+// pantalla avisa de un descuadre que no existe.
+function ajustarCustodios(pos, deltaCant, nombreCustodio) {
+  if (!pos.custodios || !pos.custodios.length) return;
+  if (nombreCustodio) {
+    const c = pos.custodios.find(x => x.nombre === nombreCustodio);
+    if (c) { c.cant = Math.max(0, c.cant + deltaCant); pos.custodios = pos.custodios.filter(x => x.cant > 0); return; }
+  }
+  // Sin custodio elegido, se reparte a prorrata de lo que hay.
+  const total = pos.custodios.reduce((a, x) => a + (x.cant || 0), 0);
+  if (!total) return;
+  for (const c of pos.custodios) c.cant = Math.max(0, c.cant + deltaCant * (c.cant / total));
+  pos.custodios = pos.custodios.filter(x => x.cant > 0.0000001);
 }
 
 function deletePos(id) {
@@ -1585,7 +1666,7 @@ function sellPosition() {
   const producido = precio * cant;   // monto total que entra a liquidez
   const pnlUSD = tc > 0 ? pnlARS / tc : 0;
   const rentPct = pos.ppc > 0 ? (precio - pos.ppc) / pos.ppc : 0;
-  const fechaStr = fecha || new Date().toLocaleDateString('es-AR');
+  const fechaStr = aISO(fecha);
 
   // 1. Guardar en historial de ventas
   state.ventas.push({
@@ -1604,6 +1685,7 @@ function sellPosition() {
   });
 
   // 3. Actualizar posición
+  ajustarCustodios(pos, -cant);
   const cantRem = pos.cant - cant;
   if (cantRem <= 0) {
     state.positions = state.positions.filter(p => p.id !== pos.id);
@@ -1661,16 +1743,36 @@ function renderPnlRealizado() {
 }
 
 function deleteVenta(id) {
-  // Al borrar una venta, también borramos la entrada de liquidez correspondiente si fue auto-generada
   const venta = state.ventas.find(v => v.id === id);
-  if (venta) {
-    state.liquidez = state.liquidez.filter(l =>
-      !(l.origen === 'venta' && l.desc.includes(venta.ticket) && l.monto === (venta.producido || venta.precioVenta * venta.cant))
-    );
+  if (!venta) return;
+  if (!confirm(`¿Borrar la venta de ${venta.cant} ${venta.ticket}?\n\n` +
+               `Vuelven ${venta.cant} nominales a la posición y se descuenta ` +
+               `${fmt(venta.producido || venta.precioVenta * venta.cant)} de la liquidez.`)) return;
+
+  // Antes sólo se borraba el registro: los nominales NO volvian a la posicion,
+  // asi que una venta mal cargada no se podia deshacer. Y el filtro de liquidez
+  // borraba TODAS las entradas que coincidieran, no una.
+  const producido = venta.producido || venta.precioVenta * venta.cant;
+  const i = (state.liquidez || []).findIndex(l =>
+    l.origen === 'venta' && l.desc.includes(venta.ticket) && Math.abs(l.monto - producido) < 0.01);
+  if (i >= 0) state.liquidez.splice(i, 1);
+
+  const pos = state.positions.find(p => p.ticket === venta.ticket);
+  if (pos) {
+    pos.cant += venta.cant;
+    ajustarCustodios(pos, venta.cant);
+  } else {
+    state.positions.push({
+      id: Date.now(), ticket: venta.ticket, tipo: venta.tipo || 'Cedear', sector: '',
+      ppc: venta.ppc, cant: venta.cant, precio: venta.precioVenta, precioUSD: 0,
+      fecha: aISO(venta.fecha), tc: venta.tc || state.tc,
+      nota: 'Reabierta al borrar la venta del ' + venta.fecha,
+    });
   }
+
   state.ventas = state.ventas.filter(v => v.id !== id);
   saveState(); renderAll();
-  showToast('Venta eliminada y liquidez revertida');
+  showToast(`${venta.cant} ${venta.ticket} devueltos a la posición`);
 }
 
 // =========================================================
