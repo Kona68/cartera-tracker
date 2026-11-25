@@ -1,5 +1,11 @@
 // Serie historica diaria por ticker, para los indicadores por periodo y el panel
-// de rotacion. Prueba bCBA y cae a nYSE, igual que /api/precios.
+// de rotacion. Prueba bCBA y cae a nYSE, igual que /api/precios, pero DICE de
+// cual de las dos vino: la de nYSE esta en dolares y la de bCBA en pesos, y
+// hasta ahora las dos se devolvian igual. El cliente las guardaba en la misma
+// columna sin distinguirlas: quedaron 12 dias de TSLA a ~$400 entre precios de
+// ~$40.000 (el YTD daba +10.165%) y dos tickers enteros, BBVA y DRAM, en
+// dolares. El fallback hace falta --esos dos solo existen en nYSE--, lo que
+// faltaba era la etiqueta.
 import { getIOLSerie } from './_iol.js';
 
 export default async function handler(req, res) {
@@ -21,17 +27,13 @@ export default async function handler(req, res) {
   const fallas = {};
 
   await Promise.allSettled(lista.map(async ticker => {
-    // Antes, si bCBA no contestaba se pedia la misma serie a nYSE y se devolvia
-    // como si nada. Pero esa viene en DOLARES y el cliente la guarda en la misma
-    // tabla que la de pesos: quedaron 12 dias de TSLA a ~$400 entre precios de
-    // ~$40.000, y con eso el YTD daba +10.165%. Una serie de otra plaza no es la
-    // misma serie. Si bCBA no tiene, el ticker sale en `fallas` y la pantalla lo
-    // dice, que es mejor que un numero en la unidad equivocada.
-    const r = await getIOLSerie(ticker, d, h, 'bCBA');
+    let r = await getIOLSerie(ticker, d, h, 'bCBA');
     r.mercado = 'bCBA';
+    if (!r.puntos.length) { r = await getIOLSerie(ticker, d, h, 'nYSE'); r.mercado = 'nYSE'; }
     if (r.puntos.length) {
       series[ticker] = r.puntos;
-      meta[ticker] = { mercado: r.mercado, ajuste: r.ajuste, n: r.puntos.length,
+      meta[ticker] = { mercado: r.mercado, moneda: r.mercado === 'nYSE' ? 'USD' : 'ARS',
+                       ajuste: r.ajuste, n: r.puntos.length,
                        desde: r.puntos[0].fecha, hasta: r.puntos[r.puntos.length - 1].fecha };
     } else {
       fallas[ticker] = r.error ?? 'sin datos';

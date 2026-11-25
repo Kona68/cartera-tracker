@@ -3137,6 +3137,8 @@ let watchlist = [];         // [{ticker, nota}]
 let periodoActivo = '3M';
 let monedaActiva = 'ARS';   // ARS | USD
 let cacheUSD = {};          // ticker -> serie convertida, se limpia al resincronizar
+let cacheARS = {};          // idem, para las series que vienen en dolares
+let monedaSerie = {};       // ticker -> 'ARS' | 'USD', la unidad en que se guardo
 let historiaAlDia = null;   // fecha del ultimo dato que tenemos
 
 function detectarSplits(serie) {
@@ -3187,17 +3189,25 @@ function mepEn(fecha) {
   return elegido ? elegido.precio : null;
 }
 
+// Antes esto asumia que TODA serie guardada estaba en pesos, asi que en modo
+// dolares dividia por el MEP sin mirar. BBVA y DRAM solo cotizan en nYSE y se
+// guardan en dolares: dividirlas otra vez las dejaba en centavos. Ahora cada
+// serie dice su unidad y se convierte solo cuando no coincide con la pantalla.
 function serieDe(ticker) {
   const base = historia[ticker];
   if (!base || !base.length) return null;
-  if (monedaActiva === 'ARS') return base;
-  if (cacheUSD[ticker]) return cacheUSD[ticker];
+  if (ticker === 'MEP') return base;            // el MEP es el tipo de cambio, no se convierte
+  const propia = monedaSerie[ticker] || 'ARS';
+  if (propia === monedaActiva) return base;
+  const cache = monedaActiva === 'USD' ? cacheUSD : cacheARS;
+  if (cache[ticker]) return cache[ticker];
+  const aDolares = monedaActiva === 'USD';
   const convertida = [];
   for (const p of base) {
     const mep = mepEn(p.fecha);
-    if (mep) convertida.push({ fecha: p.fecha, precio: p.precio / mep });
+    if (mep) convertida.push({ fecha: p.fecha, precio: aDolares ? p.precio / mep : p.precio * mep });
   }
-  cacheUSD[ticker] = convertida;
+  cache[ticker] = convertida;
   return convertida;
 }
 
@@ -3276,15 +3286,16 @@ function tickersDeInteres() {
 
 async function cargarHistoriaGuardada() {
   const [filas, splits, wl] = await Promise.all([
-    supabaseSelect('precios_historicos', 'ticker,fecha,precio&order=fecha.asc&limit=100000'),
+    supabaseSelect('precios_historicos', 'ticker,fecha,precio,moneda&order=fecha.asc&limit=100000'),
     supabaseSelect('splits', 'ticker,fecha,factor'),
     supabaseSelect('watchlist', 'ticker,nota&order=ticker.asc'),
   ]);
   watchlist = wl || [];
   splitsVistos = splits || [];
-  historia = {};
+  historia = {}; monedaSerie = {};
   for (const f of (filas || [])) {
     (historia[f.ticker] = historia[f.ticker] || []).push({ fecha: f.fecha, precio: Number(f.precio) });
+    monedaSerie[f.ticker] = f.moneda || 'ARS';
   }
   puntosDeOtroMercado = [];
   for (const t of Object.keys(historia)) {
@@ -3295,10 +3306,11 @@ async function cargarHistoriaGuardada() {
   historiaAlDia = Object.values(historia).flat().reduce((max, p) => p.fecha > max ? p.fecha : max, '');
 }
 
-// Un punto a menos de la decima parte de la mediana de su propia serie no es
-// una caida: es otra unidad. Un split de verdad nunca deja un solo dia afuera
-// de escala y vuelve al dia siguiente, y el detector de splits no lo agarra
-// porque su ratio mas grande es 20 y esto es 100 veces.
+// Red de seguridad por si una serie vuelve a quedar partida en dos unidades.
+// Desde que cada fila guarda su moneda no deberia pasar, pero un punto a menos
+// de la decima parte de la mediana de su propia serie no es una caida: es otra
+// unidad. El detector de splits no lo agarra, porque su ratio mas grande es 20
+// y esto es 100 veces.
 let puntosDeOtroMercado = [];
 
 function sacarPuntosDeOtroMercado(ticker, serie) {
@@ -3348,24 +3360,44 @@ async function sincronizarHistoria(forzar) {
   const res = await fetch(`/api/historico?tickers=${encodeURIComponent(pedir.join(','))}&desde=${desde}`);
   if (!res.ok) { showSyncStatus('No se pudo traer el histórico', 'var(--red)'); return; }
   const data = await res.json();
+  const aRehacer = [];
 
   const filas = [], splitsNuevos = [];
   for (const [ticker, serie] of Object.entries(data.series || {})) {
+    // La moneda la dice la API segun de que plaza salio. Si un ticker cambia de
+    // plaza entre dos sincronizaciones, su serie guardada queda mitad y mitad:
+    // eso fue lo de TSLA. Cuando cambia, se rehace entera en la unidad nueva en
+    // vez de mezclarla.
+    const moneda = (data.meta && data.meta[ticker] && data.meta[ticker].moneda) || 'ARS';
+    if (monedaSerie[ticker] && monedaSerie[ticker] !== moneda) {
+      historia[ticker] = [];
+      aRehacer.push({ ticker, de: monedaSerie[ticker], a: moneda });
+    }
+    monedaSerie[ticker] = moneda;
     const splits = detectarSplits(serie);
     splits.forEach(s => splitsNuevos.push({ ticker, fecha: s.fecha, factor: s.factor }));
     const corregida = corregirSerie(serie, splits);
     historia[ticker] = corregida.map(p => ({ fecha: p.fecha, precio: p.precio }));
-    corregida.forEach(p => filas.push({ ticker, fecha: p.fecha, precio: p.precio, precio_crudo: p.crudo ?? p.precio }));
+    corregida.forEach(p => filas.push({ ticker, fecha: p.fecha, precio: p.precio,
+                                        precio_crudo: p.crudo ?? p.precio, moneda }));
   }
 
   await supabaseUpsert('precios_historicos', filas);
   if (splitsNuevos.length) await supabaseUpsert('splits', splitsNuevos);
   splitsVistos = splitsNuevos;
-  cacheUSD = {};
+  cacheUSD = {}; cacheARS = {};
   historiaAlDia = filas.reduce((max, f) => f.fecha > max ? f.fecha : max, '');
 
+  // Si alguno cambio de plaza, lo viejo quedo en la otra unidad y hay que sacarlo.
+  for (const x of aRehacer) {
+    await supabaseDelete('precios_historicos', `ticker=eq.${x.ticker}&moneda=eq.${x.de}`);
+  }
+
   const fallas = Object.keys(data.fallas || {});
-  showSyncStatus(fallas.length ? `Histórico listo · sin datos: ${fallas.join(', ')}` : '✓ Histórico actualizado', fallas.length ? 'var(--yellow)' : 'var(--accent)');
+  const avisoCambio = aRehacer.length
+    ? ` · cambió de plaza: ${aRehacer.map(x => `${x.ticker} (${x.de}→${x.a})`).join(', ')}`
+    : '';
+  showSyncStatus((fallas.length ? `Histórico listo · sin datos: ${fallas.join(', ')}` : '✓ Histórico actualizado') + avisoCambio, fallas.length ? 'var(--yellow)' : 'var(--accent)');
   setTimeout(() => showSyncStatus(''), 5000);
 }
 
@@ -3502,7 +3534,7 @@ function renderRendimiento() {
     puntosDeOtroMercado.forEach(x => { (porTicker[x.ticker] = porTicker[x.ticker] || []).push(x.fecha); });
     partes.push('Se descartaron precios que están en dólares dentro de una serie en pesos: ' +
       Object.entries(porTicker).map(([t, f]) => `<strong>${t}</strong> (${f.length} ${f.length === 1 ? 'día' : 'días'}: ${f.join(', ')})`).join(' · ') +
-      '. Vienen de cuando el histórico caía a nYSE porque bCBA no contestó. Quedan en la base: hay que borrarlos.');
+      '. Son de cuando el histórico cambiaba de plaza sin decirlo. Tocá "Actualizar histórico" y la serie se rehace entera en una sola unidad.');
   }
   aviso.innerHTML = partes.join(' ');
 }
