@@ -30,20 +30,40 @@ export default async function handler(req, res) {
         // bid es lo que te pagan si vendés: es el precio al que podés realizar.
         if (v && typeof v === 'object' && v.bid > 0) porExchange[nombre] = v.bid;
       }
-      if (!Object.keys(porExchange).length) { fallas[m] = 'sin cotizaciones'; return; }
-      precios[m] = porExchange;
+      const bids = Object.values(porExchange);
+      if (!bids.length) { fallas[m] = 'sin cotizaciones'; return; }
+
+      // La mediana de todos los exchanges, y no la punta de uno: el 24/11
+      // Binance marcaba BTC a 91,4 millones mientras el resto estaba en 104.
+      // Una punta floja de un solo lugar no puede mover la valuación.
+      bids.sort((a, b) => a - b);
+      const med = bids.length % 2
+        ? bids[(bids.length - 1) / 2]
+        : (bids[bids.length / 2 - 1] + bids[bids.length / 2]) / 2;
+
+      // Se avisa quién se fue lejos, para que un precio raro no pase callado.
+      const lejos = {};
+      for (const [n, v] of Object.entries(porExchange)) {
+        const dif = v / med - 1;
+        if (Math.abs(dif) > 0.08) lejos[n] = Math.round(dif * 1000) / 10;
+      }
+
+      precios[m] = { mediana: med, exchanges: porExchange, n: bids.length, lejos };
     } catch (e) { fallas[m] = String(e); }
   }));
 
   // El precio en dólares, para poder mirar la cripto sin el ruido del peso.
-  let usd = {};
-  try {
-    const simbolos = lista.map(m => `"${m}USDT"`).join(',');
-    const r = await fetch(`https://api.binance.com/api/v3/ticker/price?symbols=[${encodeURIComponent(simbolos)}]`);
-    if (r.ok) {
-      for (const x of await r.json()) usd[x.symbol.replace('USDT', '')] = Number(x.price);
-    }
-  } catch (e) { /* el precio en pesos ya alcanza para valuar */ }
+  // Uno por uno: el pedido con varios símbolos a la vez quedaba mal armado y
+  // volvía vacío sin decir por qué.
+  const usd = {};
+  await Promise.all(lista.map(async (m) => {
+    try {
+      const r = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${m}USDT`);
+      if (!r.ok) return;
+      const d = await r.json();
+      if (d && d.price) usd[m] = Number(d.price);
+    } catch (e) { /* el precio en pesos ya alcanza para valuar */ }
+  }));
 
   return res.status(200).json({ precios, usd, fallas });
 }
