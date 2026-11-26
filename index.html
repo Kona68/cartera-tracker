@@ -218,6 +218,15 @@
       <div class="field"><label>Sector</label><input type="text" id="ed-sector"></div>
       <div class="field ancho" id="ed-manual-wrap" style="display:none"><label>Tenencia manual ARS</label><input type="number" id="ed-manual" step="any"></div>
       <div class="field ancho"><label>Fecha de compra</label><input type="date" id="ed-fecha"></div>
+      <div class="field ancho">
+        <label style="display:flex;align-items:center;gap:9px;cursor:pointer;text-transform:none;letter-spacing:0">
+          <input type="checkbox" id="ed-plan" style="width:auto;margin:0">
+          <span>Es parte del plan de retiro</span>
+        </label>
+        <div style="color:var(--muted);font-size:11px;line-height:1.6;margin-top:7px">
+          La posición no se mueve de la cartera: sólo se la sigue aparte, en la pestaña Retiro.
+        </div>
+      </div>
     </div>
     <div id="edImpacto"></div>
     <div class="acciones">
@@ -585,6 +594,15 @@
         <button class="btn" onclick="addCuotaPlan()">Registrar cuota</button>
       </div>
       <p id="plan-aviso" style="color:var(--muted);font-size:12px;line-height:1.6;margin:14px 0 0"></p>
+    </div>
+
+    <div class="table-wrap" style="margin-bottom:20px">
+      <div class="table-header">
+        <div class="table-title">Lo que ya venía siendo el plan</div>
+        <div style="font-size:11px;color:var(--muted)">Posiciones marcadas como parte del plan</div>
+      </div>
+      <div id="planViejas" style="overflow-x:auto"></div>
+      <p style="color:var(--muted);font-size:11.5px;line-height:1.7;margin:0 18px 18px" id="notaViejas"></p>
     </div>
 
     <div class="chart-card" style="margin-bottom:20px">
@@ -1886,6 +1904,7 @@ function abrirEditor(id) {
   document.getElementById('ed-precioUSD').value = p.precioUSD || '';
   document.getElementById('ed-tipo').value = p.tipo;
   document.getElementById('ed-sector').value = p.sector || '';
+  document.getElementById('ed-plan').checked = !!p.plan;
   document.getElementById('ed-fecha').value = p.fecha || '';
   const esManual = p.tenenciaManual != null;
   document.getElementById('ed-manual-wrap').style.display = esManual ? 'flex' : 'none';
@@ -1941,6 +1960,9 @@ function guardarEdicion() {
   p.tipo = document.getElementById('ed-tipo').value;
   p.sector = document.getElementById('ed-sector').value.trim();
   p.fecha = document.getElementById('ed-fecha').value;
+  // Marcarla no la saca de la cartera: se sigue contando una sola vez en el
+  // total y ademas se la mira aparte en Retiro. Duplicarla seria contar dos veces.
+  p.plan = document.getElementById('ed-plan').checked;
   if (p.tenenciaManual != null) {
     const m = parseFloat(document.getElementById('ed-manual').value);
     p.tenenciaManual = isNaN(m) ? p.tenenciaManual : m;
@@ -2632,19 +2654,52 @@ function mepEnFecha(fecha) {
   return e ? e.precio : null;
 }
 
+// El plan tiene DOS bloques y no se pueden medir igual:
+//
+// 1. Las posiciones que ya venian siendo el plan (SPY, QQQ). De esas sabemos los
+//    nominales y el precio promedio de compra, pero NO las fechas de cada aporte:
+//    el PPC es un promedio de muchas compras y hay un solo tipo de cambio
+//    guardado. Se pueden medir contra el PPC en pesos; pasarlas a dolares con un
+//    unico tc seria inventar la fecha de compra.
+// 2. Las cuotas nuevas, con fecha y dolares. Esas si se miden en dolares exacto.
+//
+// Lo unico que se suma limpio entre los dos bloques son los nominales y el valor
+// de hoy. El resto se informa por separado y la pantalla dice por que.
 function datosPlan() {
   const c = planCfg();
   const cuotas = [...(state.planAportes || [])].sort((a, b) => a.fecha.localeCompare(b.fecha));
-  const hoyARS = precioARSEn(c.ticker, hoyISO());
   const mepHoy = mepEnFecha(hoyISO()) || state.tc;
-  const puesto = cuotas.reduce((a, x) => a + (x.usd || 0), 0);
-  const nominales = cuotas.reduce((a, x) => a + (x.nominales || 0), 0);
-  const valor = (hoyARS && mepHoy) ? nominales * hoyARS / mepHoy : null;
-  const sinPrecio = !hoyARS || !mepHoy;
-  // La cuota de este mes: el plan se rompe por no ponerla, no por el rendimiento.
+
+  const viejas = (state.positions || []).filter(p => p.plan && p.cant > 0).map(p => {
+    const precio = parseFloat(p.precio) || 0, cant = parseFloat(p.cant) || 0;
+    const ppc = parseFloat(p.ppc) || 0;
+    return { ticket: p.ticket, cant, ppc, precio,
+             costoARS: ppc * cant, valorARS: precio * cant,
+             rend: ppc > 0 ? precio / ppc - 1 : null };
+  });
+  const costoViejoARS = viejas.reduce((a, x) => a + x.costoARS, 0);
+  const valorViejoARS = viejas.reduce((a, x) => a + x.valorARS, 0);
+
+  const puestoCuotas = cuotas.reduce((a, x) => a + (x.usd || 0), 0);
+  const nomCuotas = cuotas.reduce((a, x) => a + (x.nominales || 0), 0);
+  const hoyARS = precioARSEn(c.ticker, hoyISO());
+  const valorCuotasARS = hoyARS ? nomCuotas * hoyARS : null;
+  const valorCuotas = (valorCuotasARS !== null && mepHoy) ? valorCuotasARS / mepHoy : null;
+
+  // El total en dolares sale de valuar TODO a precio de hoy con el MEP de hoy:
+  // eso es un hecho, no depende de saber cuando se compro cada cosa.
+  const valorTotalARS = valorViejoARS + (valorCuotasARS || 0);
+  const valorTotal = mepHoy ? valorTotalARS / mepHoy : null;
+
   const mesActual = hoyISO().slice(0, 7);
   const alDia = cuotas.some(x => x.fecha.slice(0, 7) === mesActual);
-  return { c, cuotas, puesto, nominales, valor, sinPrecio, alDia, mesActual, hoyARS, mepHoy };
+  const { totalTenencia } = getTotals();
+
+  return { c, cuotas, viejas, costoViejoARS, valorViejoARS,
+           puesto: puestoCuotas, nominales: nomCuotas, valor: valorCuotas,
+           valorTotalARS, valorTotal, mepHoy, hoyARS,
+           sinPrecio: !hoyARS || !mepHoy, alDia, mesActual,
+           pesoEnCartera: totalTenencia ? valorTotalARS / totalTenencia : null };
 }
 
 function renderPlan() {
@@ -2661,30 +2716,36 @@ function renderPlan() {
   const pu = document.getElementById('plan-usd');
   if (pu && !pu.placeholder) pu.placeholder = c.cuotaUSD;
 
-  const rend = (d.valor !== null && d.puesto > 0) ? d.valor / d.puesto - 1 : null;
+  const rendViejo = d.costoViejoARS > 0 ? d.valorViejoARS / d.costoViejoARS - 1 : null;
+  const rendCuotas = (d.valor !== null && d.puesto > 0) ? d.valor / d.puesto - 1 : null;
   cont.innerHTML = `
     <div class="card ${d.alDia ? '' : 'negative'}">
       <div class="card-label">Cuota de ${d.mesActual}</div>
       <div class="card-value ${d.alDia ? 'green' : 'red'}">${d.alDia ? 'puesta' : 'falta'}</div>
-      <div class="card-sub">${d.cuotas.length} cuota${d.cuotas.length === 1 ? '' : 's'} cargada${d.cuotas.length === 1 ? '' : 's'}${d.cuotas.length ? ' · desde ' + d.cuotas[0].fecha : ''}</div>
+      <div class="card-sub">${d.cuotas.length
+        ? d.cuotas.length + ' cuota' + (d.cuotas.length === 1 ? '' : 's') + ' desde ' + d.cuotas[0].fecha
+        : 'Todavía ninguna cuota nueva cargada'}</div>
     </div>
     <div class="card">
-      <div class="card-label">Puesto</div>
-      <div class="card-value">${d.puesto > 0 ? fmtUSD(d.puesto) : '<span style="color:var(--muted)">sin cargar</span>'}</div>
-      <div class="card-sub">${c.cuotaUSD ? fmtUSD(c.cuotaUSD) + ' por mes en ' + c.ticker : ''}</div>
+      <div class="card-label">El plan vale hoy</div>
+      <div class="card-value">${d.valorTotal === null ? '<span style="color:var(--muted)">sin precio</span>' : fmtUSD(d.valorTotal)}</div>
+      <div class="card-sub">${fmt(d.valorTotalARS)}${d.viejas.length
+        ? ' · ' + d.viejas.map(v => v.ticket).join(' + ') + (d.cuotas.length ? ' + cuotas' : '') : ''}</div>
     </div>
-    <div class="card ${rend === null ? '' : (rend >= 0 ? 'positive' : 'negative')}">
-      <div class="card-label">Vale hoy</div>
-      <div class="card-value ${rend === null ? '' : (rend >= 0 ? 'green' : 'red')}">${
-        d.valor === null ? '<span style="color:var(--muted)">sin precio</span>' : fmtUSD(d.valor)}</div>
-      <div class="card-sub">${rend === null
-        ? (d.sinPrecio ? 'Falta el precio de ' + c.ticker + ' o el MEP' : 'Sin cuotas cargadas')
-        : fmtPct(rend) + ' sobre lo puesto'}</div>
+    <div class="card ${rendViejo === null ? '' : (rendViejo >= 0 ? 'positive' : 'negative')}">
+      <div class="card-label">Lo que ya tenías, vs tu precio de compra</div>
+      <div class="card-value ${rendViejo === null ? '' : (rendViejo >= 0 ? 'green' : 'red')}">${
+        rendViejo === null ? '<span style="color:var(--muted)">sin asignar</span>' : fmtPct(rendViejo)}</div>
+      <div class="card-sub">${rendViejo === null
+        ? 'Marcá SPY y QQQ como parte del plan'
+        : 'En pesos · costo ' + fmt(d.costoViejoARS)}</div>
     </div>
     <div class="card">
-      <div class="card-label">Del objetivo</div>
-      <div class="card-value">${d.valor === null ? '—' : (d.valor / c.objetivoUSD * 100).toFixed(2) + '%'}</div>
-      <div class="card-sub">Objetivo ${fmtUSD(c.objetivoUSD)}</div>
+      <div class="card-label">Cuánto de la cartera es el plan</div>
+      <div class="card-value">${d.pesoEnCartera === null ? '—' : (d.pesoEnCartera * 100).toFixed(1) + '%'}</div>
+      <div class="card-sub">${rendCuotas === null
+        ? 'El resto es lo que tiene que crecer por otro lado'
+        : 'Cuotas nuevas: ' + fmtPct(rendCuotas) + ' sobre ' + fmtUSD(d.puesto)}</div>
     </div>`;
 
   const av = document.getElementById('plan-aviso');
@@ -2692,9 +2753,52 @@ function renderPlan() {
     ? `La cuota de ${d.mesActual} ya está cargada.`
     : `<strong style="color:var(--yellow)">Falta la cuota de ${d.mesActual}.</strong> Es lo único que este panel te pide todos los meses.`;
 
+  renderPlanViejas(d);
   renderPlanTabla(d);
   renderPlanProyeccion(d);
   renderChartPlan(d);
+}
+
+function renderPlanViejas(d) {
+  const el = document.getElementById('planViejas');
+  const nota = document.getElementById('notaViejas');
+  if (!el) return;
+  if (!d.viejas.length) {
+    el.innerHTML = `<div style="padding:24px;color:var(--muted);font-size:12.5px;line-height:1.8">
+      Ninguna posición está marcada como parte del plan todavía.<br>
+      Se marca desde <strong>Cartera → editar</strong>, con la casilla “Es parte del plan de retiro”.</div>`;
+    if (nota) nota.textContent = '';
+    return;
+  }
+  const filas = d.viejas.map(v => `<tr>
+    <td style="text-align:left"><span class="ticker">${v.ticket}</span></td>
+    <td class="neutral">${v.cant}</td>
+    <td>${fmt(v.ppc)}</td>
+    <td>${fmt(v.costoARS)}</td>
+    <td>${fmt(v.valorARS)}</td>
+    <td>${d.mepHoy ? fmtUSD(v.valorARS / d.mepHoy) : '—'}</td>
+    <td class="${v.rend === null ? 'neutral' : cls(v.rend)}">${v.rend === null ? '—' : fmtPct(v.rend)}</td>
+  </tr>`).join('');
+  const r = d.costoViejoARS > 0 ? d.valorViejoARS / d.costoViejoARS - 1 : null;
+  el.innerHTML = `<table>
+    <thead><tr><th style="text-align:left">Ticker</th><th>Nominales</th><th>PPC</th>
+      <th>Costo</th><th>Vale hoy</th><th>Vale hoy US$</th><th>vs PPC</th></tr></thead>
+    <tbody>${filas}</tbody>
+    <tfoot><tr>
+      <td style="text-align:left;color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:1px">Total</td>
+      <td></td><td></td>
+      <td>${fmt(d.costoViejoARS)}</td>
+      <td style="font-family:var(--display);font-weight:700">${fmt(d.valorViejoARS)}</td>
+      <td style="font-family:var(--display);font-weight:700">${d.mepHoy ? fmtUSD(d.valorViejoARS / d.mepHoy) : '—'}</td>
+      <td class="${r === null ? 'neutral' : cls(r)}" style="font-family:var(--display);font-weight:700">${r === null ? '—' : fmtPct(r)}</td>
+    </tr></tfoot></table>`;
+
+  if (nota) nota.innerHTML =
+    `<strong>Este bloque se mide en pesos contra tu precio promedio de compra, y no en dólares.</strong> ` +
+    `No es un olvido: el PPC es el promedio de muchas compras y no están guardadas las fechas de cada una, ` +
+    `así que pasarlo a dólares obligaría a elegir un tipo de cambio y ese número diría más del dólar que elegí ` +
+    `que de tus aportes. Lo que sí es un hecho y no depende de ninguna fecha son los nominales y lo que valen hoy: ` +
+    `esos sí suman con las cuotas nuevas. De acá en adelante, cada cuota que cargues sí queda medida en dólares.`;
 }
 
 function renderPlanTabla(d) {
@@ -2734,7 +2838,7 @@ function renderPlanProyeccion(d) {
   const el = document.getElementById('planProyeccion');
   if (!el) return;
   const c = d.c;
-  const base = d.valor !== null ? d.valor : 0;
+  const base = d.valorTotal !== null ? d.valorTotal : 0;
   const SUP = [['conservador', 0.04], ['histórico del S&P', 0.07], ['optimista', 0.10]];
   const filas = SUP.map(([nom, r]) => {
     const m = r / 12, n = c.anios * 12;
@@ -2747,12 +2851,12 @@ function renderPlanProyeccion(d) {
       <td class="neutral">${(r * 100).toFixed(0)}% anual</td>
       <td>${fmtUSD(puesto)}</td>
       <td class="pos" style="font-family:var(--display);font-weight:700">${fmtUSD(total)}</td>
-      <td class="${total >= c.objetivoUSD ? 'pos' : 'neutral'}">${(total / c.objetivoUSD * 100).toFixed(1)}%</td>
+      <td class="neutral">${(total / c.objetivoUSD * 100).toFixed(1)}%</td>
     </tr>`;
   }).join('');
   el.innerHTML = `<table>
     <thead><tr><th style="text-align:left">Supuesto</th><th>Rendimiento</th>
-      <th>Lo que vas a poner</th><th>A los ${c.anios} años</th><th>Del objetivo</th></tr></thead>
+      <th>Lo que vas a poner</th><th>A los ${c.anios} años</th><th>Cuánto del objetivo cubre</th></tr></thead>
     <tbody>${filas}</tbody></table>`;
 
   const n = c.anios * 12;
@@ -2762,7 +2866,9 @@ function renderPlanProyeccion(d) {
     `pero cualquier tramo de treinta años puede dar bastante menos. Lo que sí es aritmética: a ${fmtUSD(c.cuotaUSD)} por mes ` +
     `vas a poner <strong>${fmtUSD(c.cuotaUSD * n)}</strong> en ${c.anios} años (${n} cuotas)` +
     (base > 0 ? `, más los ${fmtUSD(base)} que ya tenés adentro` : '') + `. ` +
-    `No está descontada la inflación del dólar ni los impuestos, y supone que la cuota entra todos los meses sin faltar una.`;
+    `No está descontada la inflación del dólar ni los impuestos, y supone que la cuota entra todos los meses sin faltar una. ` +
+    `<strong>Este plan no está pensado para llegar solo al objetivo de la cartera</strong>: es el piso que se arma sin decidir nada ` +
+    `todos los meses. El resto tiene que venir de otro lado.`;
 }
 
 function renderChartPlan(d) {
