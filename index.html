@@ -594,6 +594,31 @@
         <button class="btn" onclick="addCuotaPlan()">Registrar cuota</button>
       </div>
       <p id="plan-aviso" style="color:var(--muted);font-size:12px;line-height:1.6;margin:14px 0 0"></p>
+
+      <div style="margin-top:22px;border-top:1px solid var(--border);padding-top:18px">
+        <div class="form-title" style="font-size:13px">O saltear el mes a propósito</div>
+        <p style="color:var(--muted);font-size:12px;margin:6px 0 14px;line-height:1.6">
+          Un mes que decidiste no poner no es un olvido, y dejarlo en rojo para siempre es una alarma falsa.
+          Con el motivo anotado, dentro de un año vas a ver <strong style="color:var(--text)">por qué</strong> se saltearon los que se saltearon.
+        </p>
+        <div style="display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap">
+          <div class="field"><label>Mes</label><input type="month" id="salt-mes"></div>
+          <div class="field" style="flex:2;min-width:220px">
+            <label>Motivo</label>
+            <input type="text" id="salt-motivo" placeholder="Ej: pagué el viaje, gasto imprevisto...">
+          </div>
+          <button class="btn-secondary" style="flex:0 0 auto;padding:0 20px;height:42px" onclick="saltearMes()">Marcar salteado</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="table-wrap" style="margin-bottom:20px">
+      <div class="table-header">
+        <div class="table-title">Mes a mes</div>
+        <div id="mesesResumen" style="font-size:12px;color:var(--muted)"></div>
+      </div>
+      <div id="planMeses" style="overflow-x:auto"></div>
+      <p style="color:var(--muted);font-size:11.5px;line-height:1.7;margin:0 18px 18px" id="notaMeses"></p>
     </div>
 
     <div class="table-wrap" style="margin-bottom:20px">
@@ -620,6 +645,37 @@
       </div>
       <div id="planProyeccion" style="overflow-x:auto"></div>
       <p style="color:var(--muted);font-size:11.5px;line-height:1.7;margin:0 18px 18px" id="notaProyeccion"></p>
+    </div>
+
+    <div class="form-section" style="margin-top:8px">
+      <div class="form-title">📅 Lo que viene</div>
+      <p style="color:var(--muted);font-size:12px;margin-bottom:18px;line-height:1.6">
+        Los ingresos grandes que ya sabés que llegan: aguinaldo, bono, lo que sea. Anotarlos antes de que entren
+        es lo que te deja decidir con tiempo en vez de decidir cuando ya se gastaron.
+      </p>
+      <div style="display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap">
+        <div class="field"><label>Cuándo</label><input type="month" id="ing-mes"></div>
+        <div class="field" style="flex:2;min-width:180px">
+          <label>Qué es</label><input type="text" id="ing-desc" placeholder="Aguinaldo, bono de fin de año...">
+        </div>
+        <div class="field"><label>Monto</label><input type="number" id="ing-monto" step="any" placeholder="5000"></div>
+        <div class="field"><label>Moneda</label>
+          <select id="ing-moneda"><option value="USD">USD</option><option value="ARS">ARS</option></select>
+        </div>
+        <div class="field"><label>¿Va al plan?</label>
+          <select id="ing-alplan"><option value="no">No definido</option><option value="si">Sí, al plan</option></select>
+        </div>
+        <button class="btn" onclick="addIngreso()">Anotar</button>
+      </div>
+    </div>
+
+    <div class="table-wrap" style="margin-bottom:20px">
+      <div class="table-header">
+        <div class="table-title">Plata nueva anotada</div>
+        <div id="ingresosResumen" style="font-size:12px;color:var(--muted)"></div>
+      </div>
+      <div id="ingresosTabla" style="overflow-x:auto"></div>
+      <p style="color:var(--muted);font-size:11.5px;line-height:1.7;margin:0 18px 18px" id="notaIngresos"></p>
     </div>
 
     <div class="table-wrap">
@@ -880,8 +936,10 @@ let state = {
   positions: [],
   liquidez: [],
   aportes: [],
-  plan: { cuotaUSD: 100, ticker: 'SPY', objetivoUSD: 1000000, anios: 30 },
+  plan: { cuotaUSD: 100, ticker: 'SPY', objetivoUSD: 1000000, anios: 30, desde: null },
   planAportes: [],
+  planSalteados: [],
+  ingresos: [],
   ventas: [],
   retiros: [],   // { id, monto, desc, fecha }
 };
@@ -928,7 +986,9 @@ function loadState() {
         if (!state.liquidez) state.liquidez = [];
         if (!state.aportes)  state.aportes  = [];
         if (!state.planAportes) state.planAportes = [];
-        if (!state.plan) state.plan = { cuotaUSD: 100, ticker: 'SPY', objetivoUSD: 1000000, anios: 30 };
+        if (!state.planSalteados) state.planSalteados = [];
+        if (!state.ingresos) state.ingresos = [];
+        if (!state.plan) state.plan = { cuotaUSD: 100, ticker: 'SPY', objetivoUSD: 1000000, anios: 30, desde: null };
         if (!state.ventas)   state.ventas   = [];
         if (!state.retiros)  state.retiros  = [];
         if (!state.manualHist) state.manualHist = [];
@@ -2615,6 +2675,10 @@ function addCuotaPlan() {
     }
     nominales = usd * tc / pxARS;
   }
+  const mesDeLaCuota = fecha.slice(0, 7);
+  const salteado = (state.planSalteados || []).find(x => x.mes === mesDeLaCuota);
+  if (salteado) state.planSalteados = state.planSalteados.filter(x => x.mes !== mesDeLaCuota);
+
   const ya = (state.planAportes || []).find(a => a.fecha === fecha);
   if (ya) {
     ya.usd = usd > 0 ? usd : ya.usd; ya.nominales = nominales; ya.tc = tc; ya.ticker = c.ticker;
@@ -2622,11 +2686,66 @@ function addCuotaPlan() {
   } else {
     state.planAportes.push({ id: Date.now(), fecha, usd: usd > 0 ? usd : null,
                              nominales, tc, ticker: c.ticker, estimado: !(nomManual > 0) });
-    showToast(`Cuota de US$ ${usd || '—'} registrada`);
+    showToast(`Cuota de US$ ${usd || '—'} registrada` + (salteado ? ` · ${mesDeLaCuota} ya no figura salteado` : ''));
   }
   saveState(); renderPlan();
   document.getElementById('plan-usd').value = '';
   document.getElementById('plan-nom').value = '';
+}
+
+// Un mes salteado a proposito no es un olvido. Si la pantalla lo deja en rojo
+// para siempre, la alarma deja de significar algo y se la empieza a ignorar
+// --que es como se pierde la unica senal que este panel tiene que dar--.
+function saltearMes() {
+  const mes = document.getElementById('salt-mes').value;
+  const motivo = (document.getElementById('salt-motivo').value || '').trim();
+  if (!mes) { showToast('Elegí el mes'); return; }
+  if (!motivo) { showToast('Poné el motivo: sin eso el registro no sirve para nada'); return; }
+  if ((state.planAportes || []).some(x => x.fecha.slice(0, 7) === mes)) {
+    showToast(`${mes} ya tiene una cuota cargada`); return;
+  }
+  const y = (state.planSalteados || []).find(x => x.mes === mes);
+  if (y) { y.motivo = motivo; showToast(`${mes}: motivo actualizado`); }
+  else { state.planSalteados.push({ id: Date.now(), mes, motivo }); showToast(`${mes} marcado como salteado`); }
+  saveState(); renderPlan();
+  document.getElementById('salt-motivo').value = '';
+}
+
+function borrarSalteado(id) {
+  state.planSalteados = (state.planSalteados || []).filter(x => x.id !== id);
+  saveState(); renderPlan();
+  showToast('Marca quitada');
+}
+
+// ---------- plata nueva que ya se sabe que entra ----------
+function addIngreso() {
+  const mes = document.getElementById('ing-mes').value;
+  const desc = (document.getElementById('ing-desc').value || '').trim();
+  const monto = num(document.getElementById('ing-monto').value);
+  const moneda = document.getElementById('ing-moneda').value;
+  const alPlan = document.getElementById('ing-alplan').value === 'si';
+  if (!mes || !(monto > 0)) { showToast('Completá cuándo y cuánto'); return; }
+  state.ingresos.push({ id: Date.now(), mes, desc: desc || 'Ingreso', monto, moneda, alPlan, llegado: false });
+  saveState(); renderPlan();
+  document.getElementById('ing-desc').value = '';
+  document.getElementById('ing-monto').value = '';
+  showToast(`Anotado: ${desc || 'ingreso'} en ${mes}`);
+}
+
+function marcarIngresoLlegado(id) {
+  const i = (state.ingresos || []).find(x => x.id === id);
+  if (!i) return;
+  i.llegado = !i.llegado;
+  saveState(); renderPlan();
+  showToast(i.llegado
+    ? 'Marcado como llegado. Cargalo como cuota o como aporte para que entre a la medición.'
+    : 'Vuelve a estar pendiente');
+}
+
+function borrarIngreso(id) {
+  state.ingresos = (state.ingresos || []).filter(x => x.id !== id);
+  saveState(); renderPlan();
+  showToast('Ingreso borrado');
 }
 
 function borrarCuotaPlan(id) {
@@ -2693,12 +2812,15 @@ function datosPlan() {
 
   const mesActual = hoyISO().slice(0, 7);
   const alDia = cuotas.some(x => x.fecha.slice(0, 7) === mesActual);
+  const salteados = state.planSalteados || [];
+  const salteadoAhora = salteados.find(x => x.mes === mesActual) || null;
   const { totalTenencia } = getTotals();
 
   return { c, cuotas, viejas, costoViejoARS, valorViejoARS,
            puesto: puestoCuotas, nominales: nomCuotas, valor: valorCuotas,
            valorTotalARS, valorTotal, mepHoy, hoyARS,
-           sinPrecio: !hoyARS || !mepHoy, alDia, mesActual,
+           sinPrecio: !hoyARS || !mepHoy, alDia, mesActual, salteados, salteadoAhora,
+           totalTenencia,
            pesoEnCartera: totalTenencia ? valorTotalARS / totalTenencia : null };
 }
 
@@ -2719,12 +2841,16 @@ function renderPlan() {
   const rendViejo = d.costoViejoARS > 0 ? d.valorViejoARS / d.costoViejoARS - 1 : null;
   const rendCuotas = (d.valor !== null && d.puesto > 0) ? d.valor / d.puesto - 1 : null;
   cont.innerHTML = `
-    <div class="card ${d.alDia ? '' : 'negative'}">
+    <div class="card ${d.alDia ? '' : (d.salteadoAhora ? '' : 'negative')}">
       <div class="card-label">Cuota de ${d.mesActual}</div>
-      <div class="card-value ${d.alDia ? 'green' : 'red'}">${d.alDia ? 'puesta' : 'falta'}</div>
-      <div class="card-sub">${d.cuotas.length
-        ? d.cuotas.length + ' cuota' + (d.cuotas.length === 1 ? '' : 's') + ' desde ' + d.cuotas[0].fecha
-        : 'Todavía ninguna cuota nueva cargada'}</div>
+      <div class="card-value ${d.alDia ? 'green' : (d.salteadoAhora ? '' : 'red')}"
+           style="${d.salteadoAhora ? 'color:var(--muted)' : ''}">${
+        d.alDia ? 'puesta' : (d.salteadoAhora ? 'salteada' : 'falta')}</div>
+      <div class="card-sub">${d.salteadoAhora
+        ? d.salteadoAhora.motivo
+        : (d.cuotas.length
+            ? d.cuotas.length + ' cuota' + (d.cuotas.length === 1 ? '' : 's') + ' desde ' + d.cuotas[0].fecha
+            : 'Todavía ninguna cuota nueva cargada')}</div>
     </div>
     <div class="card">
       <div class="card-label">El plan vale hoy</div>
@@ -2751,9 +2877,17 @@ function renderPlan() {
   const av = document.getElementById('plan-aviso');
   if (av) av.innerHTML = d.alDia
     ? `La cuota de ${d.mesActual} ya está cargada.`
-    : `<strong style="color:var(--yellow)">Falta la cuota de ${d.mesActual}.</strong> Es lo único que este panel te pide todos los meses.`;
+    : (d.salteadoAhora
+        ? `${d.mesActual} está marcado como salteado: <strong>${d.salteadoAhora.motivo}</strong>. Si al final lo ponés, cargalo igual y la marca se va sola.`
+        : `<strong style="color:var(--yellow)">Falta la cuota de ${d.mesActual}.</strong> Es lo único que este panel te pide todos los meses.`);
+  const sm = document.getElementById('salt-mes');
+  if (sm && !sm.value) sm.value = d.mesActual;
+  const im = document.getElementById('ing-mes');
+  if (im && !im.value) im.value = d.mesActual;
 
   renderPlanViejas(d);
+  renderPlanMeses(d);
+  renderIngresos(d);
   renderPlanTabla(d);
   renderPlanProyeccion(d);
   renderChartPlan(d);
@@ -2799,6 +2933,117 @@ function renderPlanViejas(d) {
     `así que pasarlo a dólares obligaría a elegir un tipo de cambio y ese número diría más del dólar que elegí ` +
     `que de tus aportes. Lo que sí es un hecho y no depende de ninguna fecha son los nominales y lo que valen hoy: ` +
     `esos sí suman con las cuotas nuevas. De acá en adelante, cada cuota que cargues sí queda medida en dólares.`;
+}
+
+// El mes a mes es el punto del panel: una cuota sola no dice nada, la seguidilla
+// si. Y los meses salteados con su motivo son el dato que hace falta para ver el
+// patron, que es justo lo que no se ve cuando cada mes se mira solo.
+function mesesDesde(desde, hasta) {
+  const out = [];
+  let [a, m] = desde.split('-').map(Number);
+  const [ha, hm] = hasta.split('-').map(Number);
+  while (a < ha || (a === ha && m <= hm)) {
+    out.push(`${a}-${String(m).padStart(2, '0')}`);
+    m++; if (m > 12) { m = 1; a++; }
+  }
+  return out;
+}
+
+function renderPlanMeses(d) {
+  const el = document.getElementById('planMeses');
+  const res = document.getElementById('mesesResumen');
+  const nota = document.getElementById('notaMeses');
+  if (!el) return;
+
+  const marcas = [...d.cuotas.map(x => x.fecha.slice(0, 7)), ...d.salteados.map(x => x.mes)].sort();
+  if (!marcas.length) {
+    el.innerHTML = `<div style="padding:24px;color:var(--muted);font-size:12.5px;line-height:1.8">
+      El mes a mes arranca con la primera cuota o el primer mes salteado.<br>
+      Una cuota sola no dice nada; la seguidilla sí.</div>`;
+    if (res) res.textContent = '';
+    if (nota) nota.textContent = '';
+    return;
+  }
+  const desde = d.c.desde || marcas[0];
+  const meses = mesesDesde(desde, d.mesActual);
+  const filas = meses.slice().reverse().map(m => {
+    const cuota = d.cuotas.find(x => x.fecha.slice(0, 7) === m);
+    const salt = d.salteados.find(x => x.mes === m);
+    let estado, detalle, clase;
+    if (cuota) { estado = 'puesta'; clase = 'pos'; detalle = fmtUSD(cuota.usd || 0); }
+    else if (salt) { estado = 'salteada'; clase = 'neutral'; detalle = salt.motivo; }
+    else { estado = 'sin registrar'; clase = 'neg'; detalle = 'Ni cuota ni motivo'; }
+    return `<tr>
+      <td style="text-align:left"><strong>${m}</strong></td>
+      <td class="${clase}">${estado}</td>
+      <td style="text-align:left;color:var(--muted)">${detalle}</td>
+      <td>${salt ? `<button class="btn-secondary" onclick="borrarSalteado(${salt.id})">✕</button>` : ''}</td>
+    </tr>`;
+  }).join('');
+  el.innerHTML = `<table>
+    <thead><tr><th style="text-align:left">Mes</th><th>Estado</th>
+      <th style="text-align:left">Detalle</th><th></th></tr></thead>
+    <tbody>${filas}</tbody></table>`;
+
+  const puestas = meses.filter(m => d.cuotas.some(x => x.fecha.slice(0, 7) === m)).length;
+  const salt = meses.filter(m => d.salteados.some(x => x.mes === m)).length;
+  const nada = meses.length - puestas - salt;
+  if (res) res.innerHTML =
+    `${meses.length} mes${meses.length === 1 ? '' : 'es'} desde ${desde} · ` +
+    `<strong class="pos">${puestas} puesta${puestas === 1 ? '' : 's'}</strong> · ` +
+    `<span class="neutral">${salt} salteada${salt === 1 ? '' : 's'}</span>` +
+    (nada ? ` · <strong class="neg">${nada} sin registrar</strong>` : '');
+  if (nota) nota.innerHTML = nada
+    ? `Hay <strong>${nada}</strong> mes${nada === 1 ? '' : 'es'} sin cuota y sin motivo. No es un reproche: es que dentro de un año ` +
+      `no vas a poder saber si fue una decisión o un olvido, y esa diferencia es toda la información que tiene este panel.`
+    : `Ningún mes quedó sin explicar. Los salteados cuentan como registro, no como falla: lo que se puede leer después es el patrón.`;
+}
+
+function renderIngresos(d) {
+  const el = document.getElementById('ingresosTabla');
+  const res = document.getElementById('ingresosResumen');
+  const nota = document.getElementById('notaIngresos');
+  if (!el) return;
+  const ing = [...(state.ingresos || [])].sort((a, b) => a.mes.localeCompare(b.mes));
+  if (!ing.length) {
+    el.innerHTML = `<div style="padding:24px;color:var(--muted);font-size:12.5px;line-height:1.8">
+      Nada anotado todavía. El aguinaldo y el bono son los que mueven la aguja: anotalos antes de que lleguen.</div>`;
+    if (res) res.textContent = '';
+    if (nota) nota.textContent = '';
+    return;
+  }
+  const enUSD = x => x.moneda === 'USD' ? x.monto : (d.mepHoy ? x.monto / d.mepHoy : null);
+  const filas = ing.map(x => {
+    const u = enUSD(x);
+    return `<tr style="${x.llegado ? 'opacity:.55' : ''}">
+      <td style="text-align:left"><strong>${x.mes}</strong></td>
+      <td style="text-align:left">${x.desc}</td>
+      <td>${x.moneda === 'USD' ? fmtUSD(x.monto) : fmt(x.monto)}</td>
+      <td>${u === null ? '<span class="neutral">—</span>' : fmtUSD(u)}</td>
+      <td class="neutral">${(u !== null && d.totalTenencia && d.mepHoy)
+        ? (u / (d.totalTenencia / d.mepHoy) * 100).toFixed(1) + '%' : '—'}</td>
+      <td>${x.alPlan ? '<span class="tipo-badge tipo-cedear">al plan</span>' : '<span class="neutral">sin definir</span>'}</td>
+      <td><button class="btn-secondary" onclick="marcarIngresoLlegado(${x.id})">${x.llegado ? 'llegó ✓' : 'marcar'}</button></td>
+      <td><button class="btn-secondary" onclick="borrarIngreso(${x.id})">✕</button></td>
+    </tr>`;
+  }).join('');
+  el.innerHTML = `<table>
+    <thead><tr><th style="text-align:left">Cuándo</th><th style="text-align:left">Qué es</th>
+      <th>Monto</th><th>En US$</th><th>De la cartera</th><th>Destino</th><th></th><th></th></tr></thead>
+    <tbody>${filas}</tbody></table>`;
+
+  const pend = ing.filter(x => !x.llegado);
+  const totPend = pend.reduce((a, x) => a + (enUSD(x) || 0), 0);
+  const carteraUSD = (d.totalTenencia && d.mepHoy) ? d.totalTenencia / d.mepHoy : null;
+  if (res) res.innerHTML = pend.length
+    ? `Por entrar: <strong class="pos">${fmtUSD(totPend)}</strong> en ${pend.length} ingreso${pend.length === 1 ? '' : 's'}`
+    : 'Todos marcados como llegados';
+  if (nota) nota.innerHTML = pend.length && carteraUSD
+    ? `Esos ${fmtUSD(totPend)} son el <strong>${(totPend / carteraUSD * 100).toFixed(1)}%</strong> de tu cartera de hoy, ` +
+      `y equivalen a <strong>${Math.round(totPend / (d.c.cuotaUSD || 100))} cuotas</strong> de ${fmtUSD(d.c.cuotaUSD || 100)}. ` +
+      `Por eso conviene decidir qué pasa con ellos antes de que entren: mueven más que un año entero de cuotas. ` +
+      `Los montos en pesos se pasan a dólares con el MEP de hoy, así que un ingreso lejano es una estimación, no una promesa.`
+    : (pend.length ? 'Falta el MEP para pasarlos a dólares.' : '');
 }
 
 function renderPlanTabla(d) {
