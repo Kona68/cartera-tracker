@@ -41,8 +41,13 @@
   .header-meta { display: flex; align-items: center; gap: 20px; }
   .tc-badge { background: var(--surface2); border: 1px solid var(--border); padding: 6px 14px; border-radius: 6px; font-size: 12px; color: var(--muted); }
   .tc-badge strong { color: var(--accent); font-weight: 500; }
-  .tabs { display: flex; gap: 4px; padding: 0 32px; border-bottom: 1px solid var(--border); background: var(--bg); }
-  .tab { padding: 12px 20px; font-family: var(--display); font-size: 13px; font-weight: 600; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.2s; letter-spacing: 0.5px; text-transform: uppercase; }
+  /* Las pestañas no entran en un telefono y estiraban la pagina entera: el body
+     medía 1.188px contra 375 de pantalla, asi que TODO scrolleaba de costado.
+     Ahora la barra scrollea sola y el resto queda quieto. */
+  .tabs { display: flex; gap: 4px; padding: 0 32px; border-bottom: 1px solid var(--border); background: var(--bg);
+          overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tab { flex: 0 0 auto; white-space: nowrap; padding: 12px 20px; font-family: var(--display); font-size: 13px; font-weight: 600; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.2s; letter-spacing: 0.5px; text-transform: uppercase; }
   .tab:hover { color: var(--text); }
   .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
   main { padding: 28px 32px; max-width: 1600px; }
@@ -254,6 +259,7 @@
   <div class="tab" onclick="showTab('rotacion')">Rotación</div>
   <div class="tab" onclick="showTab('fundamentals')">Fundamentals</div>
   <div class="tab" onclick="showTab('graficos')">Gráficos</div>
+  <div class="tab" onclick="showTab('retiro')">Retiro</div>
   <div class="tab" onclick="showTab('liquidez')">Liquidez</div>
   <div class="tab" onclick="showTab('cargar')">Cargar Operación</div>
 </div>
@@ -525,6 +531,88 @@
     </div>
   </div>
 
+  <!-- PLAN DE RETIRO -->
+  <div id="tab-retiro" class="section">
+    <div class="aviso">
+      Este plan se mide <strong>aparte</strong> del resto de la cartera y <strong>en dólares</strong>: es plata a treinta años,
+      no se compara con lo que hace el mostrador este mes. Lo único que tiene que pasar es que la cuota entre todos los meses.
+    </div>
+
+    <div class="summary-grid" id="planResumen"></div>
+
+    <div class="form-section" style="margin-top:8px">
+      <div class="form-title">⚙️ El plan</div>
+      <div style="display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap">
+        <div class="field">
+          <label>Cuota mensual (USD)</label>
+          <input type="number" id="plan-cuota" step="any" placeholder="100">
+        </div>
+        <div class="field">
+          <label>Qué se compra</label>
+          <input type="text" id="plan-ticker" placeholder="SPY" style="text-transform:uppercase">
+        </div>
+        <div class="field">
+          <label>Objetivo (USD)</label>
+          <input type="number" id="plan-objetivo" step="any" placeholder="1000000">
+        </div>
+        <div class="field">
+          <label>Años por delante</label>
+          <input type="number" id="plan-anios" step="1" placeholder="30">
+        </div>
+        <button class="btn" onclick="guardarPlan()">Guardar</button>
+      </div>
+    </div>
+
+    <div class="form-section" style="margin-top:8px">
+      <div class="form-title">📥 Cargar una cuota</div>
+      <p style="color:var(--muted);font-size:12px;margin-bottom:18px;line-height:1.6">
+        Poné los dólares que pusiste. Los nominales se calculan con el precio del CEDEAR y el MEP de ese día;
+        si sabés cuántos compraste de verdad, cargalos y mandan los tuyos.
+      </p>
+      <div style="display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap">
+        <div class="field">
+          <label>Fecha</label>
+          <input type="date" id="plan-fecha">
+        </div>
+        <div class="field">
+          <label>Dólares puestos</label>
+          <input type="number" id="plan-usd" step="any" placeholder="100">
+        </div>
+        <div class="field">
+          <label>Nominales (opcional)</label>
+          <input type="number" id="plan-nom" step="any" placeholder="se calculan solos">
+        </div>
+        <button class="btn" onclick="addCuotaPlan()">Registrar cuota</button>
+      </div>
+      <p id="plan-aviso" style="color:var(--muted);font-size:12px;line-height:1.6;margin:14px 0 0"></p>
+    </div>
+
+    <div class="chart-card" style="margin-bottom:20px">
+      <div class="chart-title">Lo puesto contra lo que vale
+        <span style="color:var(--muted);font-size:10px;font-weight:400;margin-left:8px">en dólares, cuota por cuota</span>
+      </div>
+      <canvas id="chartPlan" height="110"></canvas>
+      <p style="color:var(--muted);font-size:11.5px;line-height:1.7;margin-top:14px" id="notaPlan"></p>
+    </div>
+
+    <div class="table-wrap" style="margin-bottom:20px">
+      <div class="table-header">
+        <div class="table-title">Adónde llega</div>
+        <div style="font-size:11px;color:var(--muted)">Una proyección no es una promesa: los supuestos están abajo</div>
+      </div>
+      <div id="planProyeccion" style="overflow-x:auto"></div>
+      <p style="color:var(--muted);font-size:11.5px;line-height:1.7;margin:0 18px 18px" id="notaProyeccion"></p>
+    </div>
+
+    <div class="table-wrap">
+      <div class="table-header">
+        <div class="table-title">Cuotas cargadas</div>
+        <div id="planTotal" style="font-size:12px;color:var(--muted)"></div>
+      </div>
+      <div id="planTabla" style="overflow-x:auto"></div>
+    </div>
+  </div>
+
   <!-- LIQUIDEZ -->
   <div id="tab-liquidez" class="section">
     <div class="summary-grid" id="liquidezCards"></div>
@@ -632,7 +720,7 @@
       <div style="display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap">
         <div class="field">
           <label>Mes</label>
-          <input type="month" id="ap-mes" value="">
+          <input type="month" id="ap-mes" value="" onchange="avisoAporteExistente()">
         </div>
         <div class="field" style="flex:1;min-width:160px">
           <label>Monto (ARS)</label>
@@ -644,7 +732,25 @@
         </div>
         <button class="btn" onclick="addAporte()">Registrar Aporte</button>
       </div>
+      <p id="ap-aviso" style="color:var(--yellow);font-size:12px;line-height:1.6;margin:14px 0 0"></p>
+
+      <div style="margin-top:22px;border-top:1px solid var(--border);padding-top:18px">
+        <div class="form-title" style="font-size:13px">Cargar muchos de una</div>
+        <p style="color:var(--muted);font-size:12px;margin:6px 0 12px;line-height:1.6">
+          Uno por línea: <code>2026-01 150000 sueldo de enero</code>. El mes y el monto son obligatorios,
+          la descripción es opcional. Vuelve a cargar el mismo mes y lo <strong style="color:var(--text)">reemplaza</strong>, no lo suma.
+        </p>
+        <textarea id="ap-lote" rows="6" placeholder="2025-12 200000 sueldo&#10;2026-01 150000&#10;2026-02 300000 bono"
+          style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:8px;
+                 color:var(--text);padding:12px;font-family:ui-monospace,monospace;font-size:12.5px"></textarea>
+        <div style="display:flex;gap:12px;align-items:center;margin-top:12px;flex-wrap:wrap">
+          <button class="btn" onclick="cargarAportesEnLote()">Cargar la lista</button>
+          <span id="ap-lote-aviso" style="color:var(--muted);font-size:12px"></span>
+        </div>
+      </div>
     </div>
+
+    <div class="summary-grid" id="aportesChequeo" style="margin-top:8px"></div>
     <div class="table-wrap">
       <div class="table-header">
         <div class="table-title">Aportes de Capital (para cálculo de rentabilidad)</div>
@@ -756,6 +862,8 @@ let state = {
   positions: [],
   liquidez: [],
   aportes: [],
+  plan: { cuotaUSD: 100, ticker: 'SPY', objetivoUSD: 1000000, anios: 30 },
+  planAportes: [],
   ventas: [],
   retiros: [],   // { id, monto, desc, fecha }
 };
@@ -801,6 +909,8 @@ function loadState() {
         state = parsed;
         if (!state.liquidez) state.liquidez = [];
         if (!state.aportes)  state.aportes  = [];
+        if (!state.planAportes) state.planAportes = [];
+        if (!state.plan) state.plan = { cuotaUSD: 100, ticker: 'SPY', objetivoUSD: 1000000, anios: 30 };
         if (!state.ventas)   state.ventas   = [];
         if (!state.retiros)  state.retiros  = [];
         if (!state.manualHist) state.manualHist = [];
@@ -867,6 +977,19 @@ const fmtUSD = n => new Intl.NumberFormat('en-US', {style:'currency', currency:'
 const fmtPct = n => (n >= 0 ? '+' : '') + (n * 100).toFixed(2) + '%';
 const cls = n => n >= 0 ? 'pos' : 'neg';
 
+// Un importe pegado de una planilla puede venir "1.500.000,50" (coma decimal) o
+// "1500000.50". parseFloat solo lee bien el segundo: con el primero devuelve 1,5.
+function num(txt) {
+  let t = String(txt == null ? '' : txt).replace(/[$\s]/g, '');
+  if (!t) return NaN;
+  const coma = t.lastIndexOf(','), punto = t.lastIndexOf('.');
+  if (coma > punto) t = t.replace(/\./g, '').replace(',', '.');   // 1.500.000,50
+  else if (punto > coma) t = t.replace(/,/g, '');                  // 1,500,000.50
+  else t = t.replace(/[.,]/g, '');                                 // 1500000
+  const v = parseFloat(t);
+  return Number.isFinite(v) ? v : NaN;
+}
+
 // =========================================================
 // TABS
 // =========================================================
@@ -878,6 +1001,7 @@ function showTab(name) {
   if (name === 'graficos') renderCharts();
   if (name === 'rendimiento') renderRendimiento();
   if (name === 'rotacion') renderRotacion();
+  if (name === 'retiro') renderPlan();
   if (name === 'fundamentals') renderFundamentals();
   if (name === 'cartera') renderCustodios();
   if (name === 'liquidez') { renderLiquidez(); renderAportes(); renderMovimientos(); renderManuales(); }
@@ -2281,17 +2405,76 @@ function addAporte() {
   const monto = parseFloat(document.getElementById('ap-monto').value);
   const desc  = document.getElementById('ap-desc').value.trim() || 'Aporte';
   if (!mes || !monto || monto <= 0) { showToast('Completá mes y monto'); return; }
+  // Antes esto hacia existing.monto += monto: cargar el mismo mes dos veces lo
+  // duplicaba sin decir nada. Es el mismo agujero del Fondo FIMA, donde cargar un
+  // total sumo en vez de reemplazar. Ahora reemplaza, y avisa con los dos numeros.
   const existing = state.aportes.find(a => a.mes === mes);
   if (existing) {
-    existing.monto += monto; existing.desc = desc;
-    showToast(`Aporte de ${mes} actualizado: ${fmt(existing.monto)}`);
+    const antes = existing.monto;
+    existing.monto = monto; existing.desc = desc; existing.tc = mepDelMes(mes);
+    showToast(`${mes}: ${fmt(antes)} reemplazado por ${fmt(monto)}`);
   } else {
-    state.aportes.push({ id: Date.now(), mes, monto, desc });
+    state.aportes.push({ id: Date.now(), mes, monto, desc, tc: mepDelMes(mes) });
     showToast(`Aporte de ${fmt(monto)} registrado para ${mes}`);
   }
   saveState(); renderAll();
   document.getElementById('ap-monto').value = '';
   document.getElementById('ap-desc').value = '';
+  avisoAporteExistente();
+}
+
+// El MEP del mes sirve para saber cuantos dolares era ese aporte cuando entro.
+// Sumar pesos de 2025 con pesos de 2026 no mide nada.
+function mepDelMes(mes) {
+  const m = historia['MEP'];
+  if (!m || !m.length) return null;
+  const delMes = m.filter(p => p.fecha.slice(0, 7) === mes);
+  if (delMes.length) return delMes[delMes.length - 1].precio;
+  let previo = null;
+  for (const p of m) { if (p.fecha.slice(0, 7) <= mes) previo = p; else break; }
+  return previo ? previo.precio : null;
+}
+
+function avisoAporteExistente() {
+  const el = document.getElementById('ap-aviso');
+  if (!el) return;
+  const mes = document.getElementById('ap-mes').value;
+  const y = mes && (state.aportes || []).find(a => a.mes === mes);
+  el.innerHTML = y
+    ? `Ya hay un aporte cargado para <strong>${mes}</strong>: ${fmt(y.monto)}. Guardar lo <strong>reemplaza</strong>.`
+    : '';
+}
+
+// Cargar veinte meses a mano es la forma segura de no cargarlos nunca.
+function cargarAportesEnLote() {
+  const txt = (document.getElementById('ap-lote').value || '').trim();
+  const aviso = document.getElementById('ap-lote-aviso');
+  if (!txt) { aviso.textContent = 'Pegá la lista primero.'; return; }
+  const nuevos = [], malas = [];
+  txt.split('\n').forEach((linea, i) => {
+    const l = linea.trim();
+    if (!l) return;
+    const m = l.match(/^(\d{4}-\d{2})\s+([\d.,]+)\s*(.*)$/);
+    if (!m) { malas.push(i + 1); return; }
+    const monto = num(m[2]);
+    if (!(monto > 0)) { malas.push(i + 1); return; }
+    nuevos.push({ mes: m[1], monto, desc: (m[3] || '').trim() || 'Aporte' });
+  });
+  if (!nuevos.length) {
+    aviso.innerHTML = `<span style="color:var(--red)">No pude leer ninguna línea. El formato es <code>2026-01 150000 texto</code>.</span>`;
+    return;
+  }
+  let reemplazados = 0;
+  for (const n of nuevos) {
+    const y = state.aportes.find(a => a.mes === n.mes);
+    if (y) { y.monto = n.monto; y.desc = n.desc; y.tc = mepDelMes(n.mes); reemplazados++; }
+    else state.aportes.push({ id: Date.now() + Math.random(), ...n, tc: mepDelMes(n.mes) });
+  }
+  saveState(); renderAll();
+  document.getElementById('ap-lote').value = '';
+  aviso.innerHTML = `Cargados <strong>${nuevos.length}</strong>` +
+    (reemplazados ? ` (${reemplazados} reemplazaron un mes que ya estaba)` : '') +
+    (malas.length ? ` · <span style="color:var(--red)">sin leer las líneas ${malas.join(', ')}</span>` : '');
 }
 
 function deleteAporte(id) {
@@ -2320,6 +2503,310 @@ function renderAportes() {
       </tr>`).join('')}
     </tbody>
   </table>`;
+}
+
+// El sistema puede deducir CUANTO pusiste en total, aunque no sepa cuando: es el
+// costo de lo que tenes hoy, mas lo que sacaste, menos lo que ganaste vendiendo.
+// No sirve para medir rendimiento --suma pesos de años distintos, que en Argentina
+// es sumar cosas distintas-- pero sirve para saber si la carga quedo completa.
+function chequeoAportes() {
+  const { totalCosto, totalRetiros, totalPnlRealizado, totalAportes } = getTotals();
+  const esperado = totalCosto + totalRetiros - totalPnlRealizado;
+  return { esperado, cargado: totalAportes, falta: esperado - totalAportes,
+           totalCosto, totalRetiros, totalPnlRealizado };
+}
+
+function renderChequeoAportes() {
+  const el = document.getElementById('aportesChequeo');
+  if (!el) return;
+  const q = chequeoAportes();
+  const listo = q.cargado > 0 && Math.abs(q.falta) < q.esperado * 0.02;
+  el.innerHTML = `
+    <div class="card">
+      <div class="card-label">El sistema deduce que pusiste</div>
+      <div class="card-value">${fmt(q.esperado)}</div>
+      <div class="card-sub">Costo de lo que tenés ${fmt(q.totalCosto)} + retiros ${fmt(q.totalRetiros)} − realizado ${fmt(q.totalPnlRealizado)}</div>
+    </div>
+    <div class="card ${q.cargado > 0 ? (listo ? 'positive' : '') : 'negative'}">
+      <div class="card-label">Cargado</div>
+      <div class="card-value ${q.cargado > 0 ? (listo ? 'green' : '') : 'red'}">${q.cargado > 0 ? fmt(q.cargado) : 'nada'}</div>
+      <div class="card-sub">${q.cargado > 0
+        ? (listo ? 'Cierra contra lo deducido' : 'Faltarían ' + fmt(q.falta))
+        : 'Sin esto no se puede medir tu rendimiento real'}</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Para qué sirve</div>
+      <div class="card-value" style="font-size:15px;line-height:1.5">Separar lo que<br>pusiste de lo que ganaste</div>
+      <div class="card-sub">Es un control del total, no una medición: suma pesos de años distintos</div>
+    </div>`;
+}
+
+// =========================================================
+// PLAN DE RETIRO
+// =========================================================
+// Se mide aparte del resto y en dolares, por dos razones. Una: es plata a treinta
+// años, no tiene sentido leerla contra lo que hizo la cartera este mes. Dos: el
+// objetivo esta en dolares, asi que medirla en pesos con el MEP moviendose la
+// haria parecer mejor o peor segun el dolar y no segun el plan.
+let chartPlanRef = null;
+
+function planCfg() {
+  const c = state.plan || {};
+  return { cuotaUSD: c.cuotaUSD || 100, ticker: (c.ticker || 'SPY').toUpperCase(),
+           objetivoUSD: c.objetivoUSD || 1000000, anios: c.anios || 30 };
+}
+
+function guardarPlan() {
+  const c = planCfg();
+  const cuota = num(document.getElementById('plan-cuota').value);
+  const obj   = num(document.getElementById('plan-objetivo').value);
+  const anios = num(document.getElementById('plan-anios').value);
+  const tk    = (document.getElementById('plan-ticker').value || '').trim().toUpperCase();
+  state.plan = {
+    cuotaUSD: cuota > 0 ? cuota : c.cuotaUSD,
+    ticker: tk || c.ticker,
+    objetivoUSD: obj > 0 ? obj : c.objetivoUSD,
+    anios: anios > 0 ? anios : c.anios,
+  };
+  saveState(); renderPlan();
+  showToast('Plan guardado');
+}
+
+// El precio del CEDEAR y el MEP del dia convierten los dolares en nominales. Si
+// el usuario sabe cuantos compro de verdad, mandan los suyos: la cuenta es una
+// estimacion y el dato es un hecho.
+function addCuotaPlan() {
+  const c = planCfg();
+  const fecha = document.getElementById('plan-fecha').value;
+  const usd = num(document.getElementById('plan-usd').value);
+  const nomManual = num(document.getElementById('plan-nom').value);
+  if (!fecha) { showToast('Elegí la fecha'); return; }
+  if (!(usd > 0) && !(nomManual > 0)) { showToast('Poné los dólares o los nominales'); return; }
+
+  const pxARS = precioARSEn(c.ticker, fecha);
+  const tc = mepEnFecha(fecha);
+  let nominales = nomManual > 0 ? nomManual : null;
+  if (nominales === null) {
+    if (!pxARS || !tc) {
+      showToast(`Sin precio de ${c.ticker} o sin MEP para el ${fecha}: cargá los nominales a mano`);
+      return;
+    }
+    nominales = usd * tc / pxARS;
+  }
+  const ya = (state.planAportes || []).find(a => a.fecha === fecha);
+  if (ya) {
+    ya.usd = usd > 0 ? usd : ya.usd; ya.nominales = nominales; ya.tc = tc; ya.ticker = c.ticker;
+    showToast(`Cuota del ${fecha} reemplazada`);
+  } else {
+    state.planAportes.push({ id: Date.now(), fecha, usd: usd > 0 ? usd : null,
+                             nominales, tc, ticker: c.ticker, estimado: !(nomManual > 0) });
+    showToast(`Cuota de US$ ${usd || '—'} registrada`);
+  }
+  saveState(); renderPlan();
+  document.getElementById('plan-usd').value = '';
+  document.getElementById('plan-nom').value = '';
+}
+
+function borrarCuotaPlan(id) {
+  state.planAportes = (state.planAportes || []).filter(a => a.id !== id);
+  saveState(); renderPlan();
+  showToast('Cuota eliminada');
+}
+
+// Siempre en pesos, sin importar el toggle de moneda de las otras pantallas:
+// la conversion a dolares la hace este panel con el MEP de cada fecha.
+function precioARSEn(ticker, fecha) {
+  const serie = historia[ticker];
+  if (!serie || !serie.length) return null;
+  if ((monedaSerie[ticker] || 'ARS') !== 'ARS') return null;
+  let e = null;
+  for (const p of serie) { if (p.fecha <= fecha) e = p; else break; }
+  return e ? e.precio : null;
+}
+
+function mepEnFecha(fecha) {
+  const m = historia['MEP'];
+  if (!m || !m.length) return null;
+  let e = null;
+  for (const p of m) { if (p.fecha <= fecha) e = p; else break; }
+  return e ? e.precio : null;
+}
+
+function datosPlan() {
+  const c = planCfg();
+  const cuotas = [...(state.planAportes || [])].sort((a, b) => a.fecha.localeCompare(b.fecha));
+  const hoyARS = precioARSEn(c.ticker, hoyISO());
+  const mepHoy = mepEnFecha(hoyISO()) || state.tc;
+  const puesto = cuotas.reduce((a, x) => a + (x.usd || 0), 0);
+  const nominales = cuotas.reduce((a, x) => a + (x.nominales || 0), 0);
+  const valor = (hoyARS && mepHoy) ? nominales * hoyARS / mepHoy : null;
+  const sinPrecio = !hoyARS || !mepHoy;
+  // La cuota de este mes: el plan se rompe por no ponerla, no por el rendimiento.
+  const mesActual = hoyISO().slice(0, 7);
+  const alDia = cuotas.some(x => x.fecha.slice(0, 7) === mesActual);
+  return { c, cuotas, puesto, nominales, valor, sinPrecio, alDia, mesActual, hoyARS, mepHoy };
+}
+
+function renderPlan() {
+  const cont = document.getElementById('planResumen');
+  if (!cont) return;
+  const d = datosPlan();
+  const c = d.c;
+
+  const inp = (id, v) => { const e = document.getElementById(id); if (e && !e.value) e.value = v; };
+  inp('plan-cuota', c.cuotaUSD); inp('plan-ticker', c.ticker);
+  inp('plan-objetivo', c.objetivoUSD); inp('plan-anios', c.anios);
+  const fe = document.getElementById('plan-fecha');
+  if (fe && !fe.value) fe.value = hoyISO();
+  const pu = document.getElementById('plan-usd');
+  if (pu && !pu.placeholder) pu.placeholder = c.cuotaUSD;
+
+  const rend = (d.valor !== null && d.puesto > 0) ? d.valor / d.puesto - 1 : null;
+  cont.innerHTML = `
+    <div class="card ${d.alDia ? '' : 'negative'}">
+      <div class="card-label">Cuota de ${d.mesActual}</div>
+      <div class="card-value ${d.alDia ? 'green' : 'red'}">${d.alDia ? 'puesta' : 'falta'}</div>
+      <div class="card-sub">${d.cuotas.length} cuota${d.cuotas.length === 1 ? '' : 's'} cargada${d.cuotas.length === 1 ? '' : 's'}${d.cuotas.length ? ' · desde ' + d.cuotas[0].fecha : ''}</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Puesto</div>
+      <div class="card-value">${d.puesto > 0 ? fmtUSD(d.puesto) : '<span style="color:var(--muted)">sin cargar</span>'}</div>
+      <div class="card-sub">${c.cuotaUSD ? fmtUSD(c.cuotaUSD) + ' por mes en ' + c.ticker : ''}</div>
+    </div>
+    <div class="card ${rend === null ? '' : (rend >= 0 ? 'positive' : 'negative')}">
+      <div class="card-label">Vale hoy</div>
+      <div class="card-value ${rend === null ? '' : (rend >= 0 ? 'green' : 'red')}">${
+        d.valor === null ? '<span style="color:var(--muted)">sin precio</span>' : fmtUSD(d.valor)}</div>
+      <div class="card-sub">${rend === null
+        ? (d.sinPrecio ? 'Falta el precio de ' + c.ticker + ' o el MEP' : 'Sin cuotas cargadas')
+        : fmtPct(rend) + ' sobre lo puesto'}</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Del objetivo</div>
+      <div class="card-value">${d.valor === null ? '—' : (d.valor / c.objetivoUSD * 100).toFixed(2) + '%'}</div>
+      <div class="card-sub">Objetivo ${fmtUSD(c.objetivoUSD)}</div>
+    </div>`;
+
+  const av = document.getElementById('plan-aviso');
+  if (av) av.innerHTML = d.alDia
+    ? `La cuota de ${d.mesActual} ya está cargada.`
+    : `<strong style="color:var(--yellow)">Falta la cuota de ${d.mesActual}.</strong> Es lo único que este panel te pide todos los meses.`;
+
+  renderPlanTabla(d);
+  renderPlanProyeccion(d);
+  renderChartPlan(d);
+}
+
+function renderPlanTabla(d) {
+  const el = document.getElementById('planTabla');
+  const tot = document.getElementById('planTotal');
+  if (!el) return;
+  if (tot) tot.innerHTML = d.cuotas.length
+    ? `${fmtUSD(d.puesto)} puestos · ${d.nominales.toFixed(2)} nominales de ${d.c.ticker}`
+    : '';
+  if (!d.cuotas.length) {
+    el.innerHTML = `<div style="padding:24px;color:var(--muted);font-size:12.5px;line-height:1.8">
+      Todavía no hay cuotas. Cargá la primera arriba y el panel empieza a medir.</div>`;
+    return;
+  }
+  const filas = [...d.cuotas].reverse().map(x => {
+    const vale = (d.hoyARS && d.mepHoy) ? x.nominales * d.hoyARS / d.mepHoy : null;
+    const r = (vale !== null && x.usd) ? vale / x.usd - 1 : null;
+    return `<tr>
+      <td style="text-align:left"><strong>${x.fecha}</strong></td>
+      <td>${x.usd ? fmtUSD(x.usd) : '<span class="neutral">—</span>'}</td>
+      <td class="neutral">${x.nominales.toFixed(2)}${x.estimado ? ' <span style="opacity:.55;font-size:10px">est.</span>' : ''}</td>
+      <td class="neutral">${x.tc ? x.tc.toFixed(1) : '—'}</td>
+      <td>${vale === null ? '<span class="neutral">—</span>' : fmtUSD(vale)}</td>
+      <td class="${r === null ? 'neutral' : cls(r)}">${r === null ? '—' : fmtPct(r)}</td>
+      <td><button class="btn-secondary" onclick="borrarCuotaPlan(${x.id})">✕</button></td>
+    </tr>`;
+  }).join('');
+  el.innerHTML = `<table>
+    <thead><tr><th style="text-align:left">Fecha</th><th>Puesto</th><th>Nominales</th>
+      <th>MEP</th><th>Vale hoy</th><th>Rend.</th><th></th></tr></thead>
+    <tbody>${filas}</tbody></table>`;
+}
+
+// Una proyeccion sin supuestos a la vista no se puede discutir, asi que van los
+// tres y se dice de donde sale cada uno.
+function renderPlanProyeccion(d) {
+  const el = document.getElementById('planProyeccion');
+  if (!el) return;
+  const c = d.c;
+  const base = d.valor !== null ? d.valor : 0;
+  const SUP = [['conservador', 0.04], ['histórico del S&P', 0.07], ['optimista', 0.10]];
+  const filas = SUP.map(([nom, r]) => {
+    const m = r / 12, n = c.anios * 12;
+    const deAportes = c.cuotaUSD * ((Math.pow(1 + m, n) - 1) / m);
+    const deHoy = base * Math.pow(1 + r, c.anios);
+    const total = deAportes + deHoy;
+    const puesto = base + c.cuotaUSD * n;
+    return `<tr>
+      <td style="text-align:left">${nom}</td>
+      <td class="neutral">${(r * 100).toFixed(0)}% anual</td>
+      <td>${fmtUSD(puesto)}</td>
+      <td class="pos" style="font-family:var(--display);font-weight:700">${fmtUSD(total)}</td>
+      <td class="${total >= c.objetivoUSD ? 'pos' : 'neutral'}">${(total / c.objetivoUSD * 100).toFixed(1)}%</td>
+    </tr>`;
+  }).join('');
+  el.innerHTML = `<table>
+    <thead><tr><th style="text-align:left">Supuesto</th><th>Rendimiento</th>
+      <th>Lo que vas a poner</th><th>A los ${c.anios} años</th><th>Del objetivo</th></tr></thead>
+    <tbody>${filas}</tbody></table>`;
+
+  const n = c.anios * 12;
+  const nota = document.getElementById('notaProyeccion');
+  if (nota) nota.innerHTML =
+    `Los tres supuestos son <strong>supuestos</strong>, no pronósticos: el S&P rindió cerca del 7% anual real a muy largo plazo, ` +
+    `pero cualquier tramo de treinta años puede dar bastante menos. Lo que sí es aritmética: a ${fmtUSD(c.cuotaUSD)} por mes ` +
+    `vas a poner <strong>${fmtUSD(c.cuotaUSD * n)}</strong> en ${c.anios} años (${n} cuotas)` +
+    (base > 0 ? `, más los ${fmtUSD(base)} que ya tenés adentro` : '') + `. ` +
+    `No está descontada la inflación del dólar ni los impuestos, y supone que la cuota entra todos los meses sin faltar una.`;
+}
+
+function renderChartPlan(d) {
+  const ctx = document.getElementById('chartPlan');
+  if (!ctx) return;
+  if (chartPlanRef) { try { chartPlanRef.destroy(); } catch (e) {} chartPlanRef = null; }
+  const nota = document.getElementById('notaPlan');
+  if (!d.cuotas.length) {
+    if (nota) nota.textContent = 'Cargá la primera cuota y acá se va a ver lo puesto contra lo que vale.';
+    return;
+  }
+  const labels = [], puesto = [], vale = [];
+  let accUSD = 0, accNom = 0;
+  for (const x of d.cuotas) {
+    accUSD += (x.usd || 0); accNom += (x.nominales || 0);
+    const pARS = precioARSEn(d.c.ticker, x.fecha), tc = mepEnFecha(x.fecha);
+    labels.push(x.fecha);
+    puesto.push(accUSD);
+    vale.push((pARS && tc) ? accNom * pARS / tc : null);
+  }
+  // El ultimo punto tiene que ser HOY. Si la curva termina en la fecha de la
+  // ultima cuota, muestra lo que valia ese dia y no lo que vale, y la nota
+  // contradice a la tarjeta de arriba.
+  if (d.valor !== null && d.cuotas[d.cuotas.length - 1].fecha < hoyISO()) {
+    labels.push(hoyISO()); puesto.push(accUSD); vale.push(d.valor);
+  }
+  chartPlanRef = new Chart(ctx.getContext('2d'), {
+    type: 'line',
+    data: { labels, datasets: [
+      { label: 'Puesto', data: puesto, borderColor: '#5a6478', borderWidth: 2,
+        borderDash: [5, 4], pointRadius: 0, tension: 0 },
+      { label: 'Vale', data: vale, borderColor: '#85BB65', backgroundColor: 'rgba(133,187,101,0.12)',
+        borderWidth: 2.5, fill: true, pointRadius: 0, tension: 0.2, spanGaps: true } ] },
+    options: { responsive: true, interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { display: true, labels: { color: '#5a6478', font: { size: 10 }, boxWidth: 12 } },
+        tooltip: { callbacks: { label: c => ` ${c.dataset.label}: ${c.raw === null ? '—' : fmtUSD(c.raw)}` } } },
+      scales: { x: { grid: { display: false }, ticks: { color: '#5a6478', font: { size: 9 }, maxTicksLimit: 10 } },
+                y: { grid: { color: '#232830' }, ticks: { color: '#5a6478', font: { size: 10 }, callback: v => 'US$' + v.toFixed(0) } } } }
+  });
+  if (nota) nota.innerHTML = d.valor === null
+    ? 'Falta el precio de hoy para valuar las cuotas.'
+    : `La línea punteada es lo que pusiste y la verde lo que vale. La distancia entre las dos es todo el rendimiento del plan: ` +
+      `<strong>${fmtUSD(d.valor - d.puesto)}</strong> sobre ${fmtUSD(d.puesto)} puestos. ` +
+      `Con pocas cuotas esa distancia va a ser chica y ruidosa — el plan no se juzga por un año.`;
 }
 
 // =========================================================
@@ -3119,6 +3606,7 @@ function renderAll() {
   renderSnapshotHistory(); renderWeeklyHistory();
   renderLiquidez(); renderAportes(); renderMovimientos(); renderPnlRealizado();
   renderRendimiento(); renderRotacion(); renderManuales(); renderCompras(); renderFundamentals(); renderCustodios();
+  renderChequeoAportes(); renderPlan();
 }
 
 // =========================================================
