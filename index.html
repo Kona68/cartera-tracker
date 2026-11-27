@@ -4032,15 +4032,16 @@ function mepEn(fecha) {
 // dolares dividia por el MEP sin mirar. BBVA y DRAM solo cotizan en nYSE y se
 // guardan en dolares: dividirlas otra vez las dejaba en centavos. Ahora cada
 // serie dice su unidad y se convierte solo cuando no coincide con la pantalla.
-function serieDe(ticker) {
+function serieDe(ticker, moneda) {
+  const quiero = moneda || monedaActiva;
   const base = historia[ticker];
   if (!base || !base.length) return null;
   if (ticker === 'MEP') return base;            // el MEP es el tipo de cambio, no se convierte
   const propia = monedaSerie[ticker] || 'ARS';
-  if (propia === monedaActiva) return base;
-  const cache = monedaActiva === 'USD' ? cacheUSD : cacheARS;
+  if (propia === quiero) return base;
+  const cache = quiero === 'USD' ? cacheUSD : cacheARS;
   if (cache[ticker]) return cache[ticker];
-  const aDolares = monedaActiva === 'USD';
+  const aDolares = quiero === 'USD';
   const convertida = [];
   for (const p of base) {
     const mep = mepEn(p.fecha);
@@ -4054,24 +4055,36 @@ function fmtMoneda(n) { return monedaActiva === 'USD' ? fmtUSD(n) : fmt(n); }
 
 // Ultimo precio con fecha <= la pedida. Devuelve null si la serie arranca despues:
 // preferimos no mostrar el dato antes que mostrar uno que no corresponde.
-function precioEn(ticker, fecha) {
-  const s = serieDe(ticker);
+function precioEn(ticker, fecha, moneda) {
+  const s = serieDe(ticker, moneda);
   if (!s || !s.length) return null;
   let elegido = null;
   for (const p of s) { if (p.fecha <= fecha) elegido = p; else break; }
   return elegido ? elegido.precio : null;
 }
 
-function ultimoPrecio(ticker) {
-  const s = serieDe(ticker);
+function ultimoPrecio(ticker, moneda) {
+  const s = serieDe(ticker, moneda);
   return s && s.length ? s[s.length - 1].precio : null;
 }
 
-function rendPeriodo(ticker, periodo) {
-  const desde = precioEn(ticker, inicioDePeriodo(periodo));
-  const hasta = ultimoPrecio(ticker);
+function rendPeriodo(ticker, periodo, moneda) {
+  const desde = precioEn(ticker, inicioDePeriodo(periodo), moneda);
+  const hasta = ultimoPrecio(ticker, moneda);
   if (!desde || !hasta) return null;
   return hasta / desde - 1;
+}
+
+// El vs PPC en dolares no es el de pesos dividido por nada: el costo se convierte
+// al tipo de cambio de LA COMPRA y el precio al de hoy. Si se usara el mismo para
+// los dos, el rendimiento en dolares seria el de pesos disfrazado.
+function vsPpcEn(p, moneda) {
+  if (!p.ppc) return null;
+  if (moneda === 'ARS') return p.precio / p.ppc - 1;
+  const mepHoy = mepEn(historiaAlDia) || state.tc;
+  const tcCompra = p.tc || state.tc;
+  if (!mepHoy || !tcCompra) return null;
+  return (p.precio / mepHoy) / (p.ppc / tcCompra) - 1;
 }
 
 // Cuanto se movio la canasta que tenes hoy, en ese periodo. No es la rentabilidad
@@ -4294,6 +4307,17 @@ function celdaRend(r) {
   return `<td class="${r >= 0 ? 'pos' : 'neg'}">${fmtPct(r)}</td>`;
 }
 
+// Las dos monedas en la misma celda: pesos arriba, dolares abajo. Separarlas en
+// doce columnas la hacia ilegible, y el dato que importa es justo la diferencia
+// entre las dos --un papel puede subir en pesos y caer en dolares, y eso es el
+// MEP comiendose el rendimiento--.
+function celdaDoble(ars, usd) {
+  const linea = (v, chico) => v === null || v === undefined
+    ? `<span class="neutral"${chico ? ' style="font-size:10px"' : ''}>—</span>`
+    : `<span class="${v >= 0 ? 'pos' : 'neg'}"${chico ? ' style="font-size:10px;opacity:.72"' : ''}>${fmtPct(v)}</span>`;
+  return `<td style="line-height:1.35">${linea(ars, false)}<br>${linea(usd, true)}</td>`;
+}
+
 function renderRendimiento() {
   renderRentPorTipo();
   const cont = document.getElementById('rendResumen');
@@ -4326,42 +4350,43 @@ function renderRendimiento() {
       <div class="card-sub">${nTickers} tickers con serie${monedaActiva === 'USD' ? ' · MEP ' + (mepEn(historiaAlDia) || '—') : ''}</div>
     </div>`;
 
+  const PER = ['1S','1M','3M','YTD','1A'];
   const filas = state.positions
     .filter(p => p.tipo !== 'Crypto' && p.cant > 0)
-    .map(p => ({ p, r: Object.fromEntries(['1S','1M','3M','YTD','1A'].map(k => [k, rendPeriodo(p.ticket, k)])) }))
-    .sort((a, b) => (b.r[periodoActivo] ?? -99) - (a.r[periodoActivo] ?? -99));
+    .map(p => ({
+      p,
+      ars: Object.fromEntries(PER.map(k => [k, rendPeriodo(p.ticket, k, 'ARS')])),
+      usd: Object.fromEntries(PER.map(k => [k, rendPeriodo(p.ticket, k, 'USD')])),
+    }))
+    // El orden es el mismo en las dos monedas y no es casualidad: en un periodo
+    // dado, el rendimiento en dolares es el de pesos multiplicado por
+    // (MEP del inicio / MEP de hoy), y ese factor es identico para todos los
+    // tickers. Multiplicar por una constante positiva no reordena nada, asi que
+    // ordenar por la moneda activa era una rama que no hacia nada y hacia creer
+    // que el selector servia para algo aca.
+    .sort((a, b) => (b.ars[periodoActivo] ?? -99) - (a.ars[periodoActivo] ?? -99));
 
   document.getElementById('rendTable').innerHTML = `
     <table>
       <thead><tr>
         <th>Ticker</th><th>Tipo</th><th>1 semana</th><th>1 mes</th><th>3 meses</th><th>YTD</th><th>1 año</th><th>vs PPC</th>
-      </tr></thead>
-      <tbody>${filas.map(({ p, r }) => {
-        // En dolares el costo se convierte al TC de la compra, no al de hoy: si no,
-        // el rendimiento en dolares seria el de pesos disfrazado.
-        let vsPpc = null;
-        if (p.ppc) {
-          if (monedaActiva === 'ARS') vsPpc = p.precio / p.ppc - 1;
-          else {
-            const mepHoy = mepEn(historiaAlDia) || state.tc;
-            const tcCompra = p.tc || state.tc;
-            vsPpc = (p.precio / mepHoy) / (p.ppc / tcCompra) - 1;
-          }
-        }
-        return `<tr>
+      </tr>
+      <tr><th></th><th></th>${['','','','','',''].map(() =>
+        '<th style="font-size:9px;font-weight:400;color:var(--muted);text-transform:none;letter-spacing:0;padding-top:0">pesos / dólares</th>').join('')}</tr></thead>
+      <tbody>${filas.map(({ p, ars, usd }) => `
+        <tr>
           <td class="ticker">${p.ticket}</td>
           <td><span class="tipo-badge tipo-${(p.tipo||'').toLowerCase().replace('ó','o').replace('í','i')}">${p.tipo}</span></td>
-          ${celdaRend(r['1S'])}${celdaRend(r['1M'])}${celdaRend(r['3M'])}${celdaRend(r['YTD'])}${celdaRend(r['1A'])}
-          ${celdaRend(vsPpc)}
-        </tr>`;
-      }).join('')}</tbody>
+          ${PER.map(k => celdaDoble(ars[k], usd[k])).join('')}
+          ${celdaDoble(vsPpcEn(p, 'ARS'), vsPpcEn(p, 'USD'))}
+        </tr>`).join('')}</tbody>
     </table>
     ${filas.length ? '' : '<div style="padding:20px;color:var(--muted)">Sin posiciones con serie de precios.</div>'}`;
 
   const etq = document.getElementById('rendMoneda');
-  if (etq) etq.textContent = monedaActiva === 'USD'
-    ? 'Medido en dólares, con el MEP de cada día'
-    : 'Medido en pesos · ordenado por el período elegido';
+  if (etq) etq.innerHTML = `Cada celda trae las dos monedas · ordenado por ${periodoActivo}. ` +
+    `<span style="opacity:.75">El selector de arriba no cambia esta tabla: el orden sale igual en pesos que en dólares, ` +
+    `porque el MEP de cada período divide a todos por igual.</span>`;
 
   const aviso = document.getElementById('rendAviso');
   const conSplit = [...new Set(splitsVistos.map(s => s.ticker))];
